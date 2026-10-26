@@ -23,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 	v1 "k8s.io/api/core/v1"
 	pluginapi "k8s.io/kubelet/pkg/apis/resourceplugin/v1alpha1"
 
@@ -629,7 +630,7 @@ func TestCalculateHintsForNUMABindingSharedCores1(t *testing.T) {
 			if tt.expectedError {
 				assert.Error(t, err)
 			} else {
-				assert.Equal(t, tt.expectedHints, result)
+				assert.True(t, proto.Equal(&pluginapi.ResourceHintsResponse{ResourceHints: tt.expectedHints}, &pluginapi.ResourceHintsResponse{ResourceHints: result}), "expected hints %v, got %v", tt.expectedHints, result)
 			}
 		})
 	}
@@ -731,7 +732,7 @@ func TestPopulateHintsByAlreadyExistedNUMABindingResult(t *testing.T) {
 				assert.NoError(t, err)
 			}
 
-			assert.Equal(t, tt.wantHints, tt.hints)
+			assert.True(t, proto.Equal(tt.wantHints, tt.hints), "expected hints %v, got %v", tt.wantHints, tt.hints)
 		})
 	}
 }
