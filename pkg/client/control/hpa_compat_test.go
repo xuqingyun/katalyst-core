@@ -32,3 +32,12 @@ func TestHPAManagerUsesBetaForCreateAndPatch(t *testing.T) {
 		}
 	}
 }
+
+func TestHPAManagerBetaRejectsNewContainerMetricBeforeRequest(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	manager := NewHPAManagerForVersion(client, "v2beta2")
+	hpa := &v2.HorizontalPodAutoscaler{Spec: v2.HorizontalPodAutoscalerSpec{Metrics: []v2.MetricSpec{{Type: v2.ContainerResourceMetricSourceType}}}}
+	if _, err := manager.Create(context.Background(), hpa, metav1.CreateOptions{}); err == nil || len(client.Actions()) != 0 {
+		t.Fatalf("unsupported metric submitted: %v %v", err, client.Actions())
+	}
+}

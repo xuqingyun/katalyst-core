@@ -250,8 +250,8 @@ func Test_generateHPA(t *testing.T) {
 				ScaleStrategy: "Preview",
 				TimeBounds: []v1alpha2.TimeBound{
 					{
-						Start: metav1.Time{},
-						End:   metav1.Time{},
+						Start: metav1.Time{Time: time.Now().Add(-time.Minute)},
+						End:   metav1.Time{Time: time.Now().Add(time.Minute)},
 						Bounds: []v1alpha2.Bound{
 							{
 								CronTab:     "* * * * *",

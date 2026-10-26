@@ -18,6 +18,14 @@ import (
 // HPAToBeta preserves External/Object/Pods/Resource metrics and scaling behavior.
 // Fields that cannot be represented by the beta schema are rejected, never silently dropped.
 func HPAToBeta(in *v2.HorizontalPodAutoscaler) (*beta.HorizontalPodAutoscaler, error) {
+	// The v0.35 beta2 Go type contains ContainerResource, but the fixed internal
+	// 1.18 beta2 API/server does not. Do not silently submit this newer metric.
+	for _, metric := range in.Spec.Metrics {
+		if metric.Type == v2.ContainerResourceMetricSourceType || metric.ContainerResource != nil {
+			return nil, fmt.Errorf("ContainerResource HPA metrics require server support absent in internal Kubernetes 1.18")
+		}
+	}
+
 	data, err := json.Marshal(in)
 	if err != nil {
 		return nil, err

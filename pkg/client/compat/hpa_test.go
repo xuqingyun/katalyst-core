@@ -74,3 +74,10 @@ func TestHPABetaRejectsNewTolerance(t *testing.T) {
 		t.Fatal("unsupported field silently dropped")
 	}
 }
+
+func TestHPABetaRejectsContainerResourceAbsentInInternal118(t *testing.T) {
+	in := &v2.HorizontalPodAutoscaler{Spec: v2.HorizontalPodAutoscalerSpec{Metrics: []v2.MetricSpec{{Type: v2.ContainerResourceMetricSourceType, ContainerResource: &v2.ContainerResourceMetricSource{Name: core.ResourceCPU, Container: "main"}}}}}
+	if _, err := HPAToBeta(in); err == nil {
+		t.Fatal("new beta2 Go type hid the 1.18 server field gap")
+	}
+}

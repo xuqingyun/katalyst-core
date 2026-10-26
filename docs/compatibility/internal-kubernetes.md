@@ -13,7 +13,7 @@ This feature branch builds with effective client-go and Kubernetes HTTP SDK 0.35
 | VPA | Use native pods/resize when served; otherwise retain legacy annotation submission | CPU/memory-only patch tests, untouched-resource preservation, creation-time restart-policy checks, real API submission |
 | Tide | Align descheduler/autoscaler to the Kubernetes 1.35 line; preserve disabled DRA/CSI snapshot features and scheduler default parallelism | Full controller build and Tide regression |
 
-HPA conversion rejects v2 fields that v2beta2 cannot represent (for example tolerance); it does not silently downgrade to autoscaling/v1. Native resize requires matching restart policies at Pod creation, since those policies cannot be changed during resize. Rejected resize/eviction requests never fall back to ordinary Pod mutation or DELETE.
+HPA conversion rejects v2 fields that v2beta2 cannot represent (for example tolerance), and ContainerResource metrics absent from the fixed internal 1.18 server even though the v0.35 beta2 Go type includes them; it does not silently downgrade to autoscaling/v1. Native resize requires matching restart policies at Pod creation, since those policies cannot be changed during resize. Rejected resize/eviction requests never fall back to ordinary Pod mutation or DELETE.
 
 The SDK fixes do not add ResourcePlugin topology/device processing to the server, PDB eviction history, legacy/native runtime resize semantics, or ORM methods. CPU-only/Memory allocation and OS cgroup application must still be verified independently. Open-source Katalyst scheduler plugins are outside the internal Godel deployment chain.
 
