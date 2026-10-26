@@ -73,8 +73,9 @@ const (
 // efficiency, we can't assume that all function callers MUST use an
 // indexed informer to look up objects.
 type VPAController struct {
-	ctx  context.Context
-	conf *controller.VPAConfig
+	ctx          context.Context
+	conf         *controller.VPAConfig
+	nativeResize bool
 
 	vpaUpdater      control.VPAUpdater
 	podUpdater      control.PodUpdater
@@ -194,6 +195,15 @@ func NewVPAController(ctx context.Context, controlCtx *katalyst_base.GenericCont
 	}
 
 	if !genericConf.DryRun {
+		resources, err := genericClient.DiscoveryClient.ServerResourcesForGroupVersion("v1")
+		if err != nil {
+			return nil, err
+		}
+		for _, resource := range resources.APIResources {
+			if resource.Name == "pods/resize" {
+				vpaController.nativeResize = true
+			}
+		}
 		vpaController.vpaUpdater = control.NewRealVPAUpdater(genericClient.InternalClient)
 		vpaController.podUpdater = control.NewRealPodUpdater(genericClient.KubeClient)
 		vpaController.workloadControl = control.NewRealUnstructuredControl(genericClient.DynamicClient)
@@ -639,6 +649,25 @@ func (vc *VPAController) patchPodResources(vpa *apis.KatalystVerticalPodAutoscal
 		return fmt.Errorf("failed to exact pod %v resize resource annotation from container resource: %v", pod.Name, err)
 	}
 
+	if vc.nativeResize {
+		if vpa == nil || vpa.Spec.UpdatePolicy.PodUpdatingStrategy == apis.PodUpdatingStrategyOff {
+			return nil
+		}
+		next, err := nativeResizePod(pod, annotationResource, containerPolicies)
+		if err != nil {
+			return err
+		}
+		if apiequality.Semantic.DeepEqual(pod.Spec.Containers, next.Spec.Containers) {
+			return nil
+		}
+		updater, ok := vc.podUpdater.(interface {
+			ResizePod(context.Context, *core.Pod, *core.Pod) error
+		})
+		if !ok {
+			return fmt.Errorf("native resize updater not configured")
+		}
+		return updater.ResizePod(vc.ctx, pod, next)
+	}
 	marshalledResourceAnnotation, err := json.Marshal(annotationResource)
 	if err != nil {
 		return err
@@ -683,4 +712,49 @@ func (vc *VPAController) patchPodResources(vpa *apis.KatalystVerticalPodAutoscal
 	}
 
 	return nil
+}
+
+// nativeResizePod retains untouched resources and validates the immutable per-container resize policy.
+func nativeResizePod(pod *core.Pod, resources map[string]core.ResourceRequirements, policies map[string]apis.ContainerResourcePolicy) (*core.Pod, error) {
+	next := pod.DeepCopy()
+	for index := range next.Spec.Containers {
+		c := &next.Spec.Containers[index]
+		target, ok := resources[c.Name]
+		if !ok {
+			continue
+		}
+		if c.Resources.Requests == nil {
+			c.Resources.Requests = core.ResourceList{}
+		}
+		if c.Resources.Limits == nil {
+			c.Resources.Limits = core.ResourceList{}
+		}
+		for _, pair := range []struct{ source, dest core.ResourceList }{{target.Requests, c.Resources.Requests}, {target.Limits, c.Resources.Limits}} {
+			for name, value := range pair.source {
+				if name != core.ResourceCPU && name != core.ResourceMemory {
+					return nil, fmt.Errorf("native resize does not support changing %s", name)
+				}
+				pair.dest[name] = value.DeepCopy()
+			}
+		}
+		if policy, ok := policies[c.Name]; ok && policy.ResourceResizePolicy == apis.ResourceResizePolicyRestart {
+			for _, name := range []core.ResourceName{core.ResourceCPU, core.ResourceMemory} {
+				if _, exists := target.Requests[name]; !exists {
+					if _, exists = target.Limits[name]; !exists {
+						continue
+					}
+				}
+				restart := false
+				for _, p := range c.ResizePolicy {
+					if p.ResourceName == name && p.RestartPolicy == core.RestartContainer {
+						restart = true
+					}
+				}
+				if !restart {
+					return nil, fmt.Errorf("container %s needs resizePolicy RestartContainer for %s at creation", c.Name, name)
+				}
+			}
+		}
+	}
+	return next, nil
 }

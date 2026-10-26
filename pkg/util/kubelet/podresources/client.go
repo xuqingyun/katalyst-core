@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"k8s.io/cri-client/pkg/util"
 	"k8s.io/klog/v2"
+	podcompat "k8s.io/kubelet/pkg/apis/podresources/compat"
 	v1 "k8s.io/kubelet/pkg/apis/podresources/v1"
 
 	"github.com/kubewharf/katalyst-core/pkg/util/general"
@@ -69,14 +70,16 @@ func EndpointAutoDiscoveryPodResourcesClient(endpoints []string, getClientFunc G
 			return
 		}
 
-		p.Lock()
-		// Attempt to create a client and a connection
-		p.client, conn, err = getClientFunc(existingPath, podResourcesClientTimeout, podResourcesClientMaxMsgSize)
+		var client v1.PodResourcesListerClient
+		// Connection failures must not leave the client mutex locked.
+		client, conn, err = getClientFunc(existingPath, podResourcesClientTimeout, podResourcesClientMaxMsgSize)
 		if err != nil {
 			klog.Errorf("failed to create podResources client, connect error: %v", err)
 			return
 		}
 
+		p.Lock()
+		p.client = client
 		p.isInitialized = true
 		p.Unlock()
 
@@ -152,4 +155,24 @@ func GetV1Client(socket string, connectionTimeout time.Duration, maxMsgSize int)
 		return nil, nil, fmt.Errorf("error dialing socket %s: %v", socket, err)
 	}
 	return v1.NewPodResourcesListerClient(conn), conn, nil
+}
+
+// GetV1ClientForProtocol selects the node wire layout before issuing any RPC.
+func GetV1ClientForProtocol(value string) GetClientFunc {
+	return func(socket string, timeout time.Duration, maxMsgSize int) (v1.PodResourcesListerClient, *grpc.ClientConn, error) {
+		protocol, err := podcompat.ParseProtocol(value)
+		if err != nil {
+			return nil, nil, err
+		}
+		_, conn, err := GetV1Client(socket, timeout, maxMsgSize)
+		if err != nil {
+			return nil, nil, err
+		}
+		client, err := podcompat.NewClient(conn, protocol)
+		if err != nil {
+			conn.Close()
+			return nil, nil, err
+		}
+		return client, conn, nil
+	}
 }

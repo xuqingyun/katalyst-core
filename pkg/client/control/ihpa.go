@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/kubewharf/katalyst-core/pkg/client/compat"
+	autoscalingbeta "k8s.io/api/autoscaling/v2beta2"
 
 	autoscaling "k8s.io/api/autoscaling/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,7 +40,8 @@ type HPAManager interface {
 }
 
 type HPAManageImpl struct {
-	client kubernetes.Interface
+	version string
+	client  kubernetes.Interface
 }
 
 func NewHPAManager(client kubernetes.Interface) HPAManager {
@@ -47,11 +50,26 @@ func NewHPAManager(client kubernetes.Interface) HPAManager {
 	}
 }
 
+func NewHPAManagerForVersion(client kubernetes.Interface, version string) HPAManager {
+	return &HPAManageImpl{client: client, version: version}
+}
+
 func (h *HPAManageImpl) Create(ctx context.Context,
 	new *autoscaling.HorizontalPodAutoscaler, opts metav1.CreateOptions,
 ) (*autoscaling.HorizontalPodAutoscaler, error) {
 	if new == nil {
 		return nil, fmt.Errorf("can't create a nil HPA")
+	}
+	if h.version == "v2beta2" {
+		converted, err := compat.HPAToBeta(new)
+		if err != nil {
+			return nil, err
+		}
+		created, err := h.client.AutoscalingV2beta2().HorizontalPodAutoscalers(new.Namespace).Create(ctx, converted, opts)
+		if err != nil {
+			return nil, err
+		}
+		return compat.HPAFromBeta(created)
 	}
 	return h.client.AutoscalingV2().HorizontalPodAutoscalers(new.Namespace).Create(ctx, new, opts)
 }
@@ -63,6 +81,36 @@ func (h *HPAManageImpl) Patch(ctx context.Context, old,
 		return nil, fmt.Errorf("can't patch a nil HPA")
 	}
 
+	if h.version == "v2beta2" {
+		before, err := compat.HPAToBeta(old)
+		if err != nil {
+			return nil, err
+		}
+		after, err := compat.HPAToBeta(new)
+		if err != nil {
+			return nil, err
+		}
+		oldData, err := json.Marshal(before)
+		if err != nil {
+			return nil, err
+		}
+		newData, err := json.Marshal(after)
+		if err != nil {
+			return nil, err
+		}
+		patch, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, &autoscalingbeta.HorizontalPodAutoscaler{})
+		if err != nil {
+			return nil, err
+		}
+		if general.JsonPathEmpty(patch) {
+			return nil, nil
+		}
+		out, err := h.client.AutoscalingV2beta2().HorizontalPodAutoscalers(old.Namespace).Patch(ctx, old.Name, types.StrategicMergePatchType, patch, opts)
+		if err != nil {
+			return nil, err
+		}
+		return compat.HPAFromBeta(out)
+	}
 	oldData, err := json.Marshal(old)
 	if err != nil {
 		return nil, err

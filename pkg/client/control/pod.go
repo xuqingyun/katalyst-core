@@ -119,3 +119,19 @@ type RealPodUpdaterWithMetric struct {
 	client kubernetes.Interface
 	RealPodUpdater
 }
+
+// ResizePod submits resource-only changes to the native resize subresource.
+// It never falls back to ordinary PATCH after admission rejects a resize.
+func (r *RealPodUpdater) ResizePod(ctx context.Context, oldPod, newPod *core.Pod) error {
+	before, _ := json.Marshal(oldPod)
+	after, _ := json.Marshal(newPod)
+	patch, err := strategicpatch.CreateTwoWayMergePatch(before, after, &core.Pod{})
+	if err != nil {
+		return err
+	}
+	if general.JsonPathEmpty(patch) {
+		return nil
+	}
+	_, err = r.client.CoreV1().Pods(oldPod.Namespace).Patch(ctx, oldPod.Name, types.StrategicMergePatchType, patch, metav1.PatchOptions{}, "resize")
+	return err
+}

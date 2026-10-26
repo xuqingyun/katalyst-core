@@ -19,6 +19,9 @@ package ihpa
 import (
 	"context"
 	"fmt"
+	"github.com/kubewharf/katalyst-core/pkg/client/compat"
+	"k8s.io/client-go/kubernetes"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	v2 "k8s.io/api/autoscaling/v2"
@@ -423,14 +426,27 @@ func NewIHPAController(ctx context.Context, controlCtx *katalystbase.GenericCont
 	virtualWorkloadInformer := controlCtx.InternalInformerFactory.Autoscaling().V1alpha2().VirtualWorkloads()
 	spdInformer := controlCtx.InternalInformerFactory.Workload().V1alpha1().ServiceProfileDescriptors()
 	genericClient := controlCtx.Client
+	hpaVersion, err := compat.ResourceVersion(genericClient.DiscoveryClient, "autoscaling", "horizontalpodautoscalers", "v2", "v2beta2")
+	if err != nil {
+		return nil, err
+	}
+	var hpaInformer cache.SharedIndexInformer
+	if hpaVersion == "v2beta2" {
+		// InformerFor must be called before the standard V2 informer is registered.
+		hpaInformer = controlCtx.KubeInformerFactory.InformerFor(&v2.HorizontalPodAutoscaler{}, func(client kubernetes.Interface, period time.Duration) cache.SharedIndexInformer {
+			return cache.NewSharedIndexInformer(compat.HPABetaListWatch(client, metav1.NamespaceAll), &v2.HorizontalPodAutoscaler{}, period, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+		})
+	} else {
+		hpaInformer = controlCtx.KubeInformerFactory.Autoscaling().V2().HorizontalPodAutoscalers().Informer()
+	}
 
 	ihpaController := &IHPAController{
 		ctx:                   ctx,
 		conf:                  conf,
-		hpaLister:             controlCtx.KubeInformerFactory.Autoscaling().V2().HorizontalPodAutoscalers().Lister(),
+		hpaLister:             hpalister.NewHorizontalPodAutoscalerLister(hpaInformer.GetIndexer()),
 		ihpaSyncQueue:         workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "ihpa"),
 		ihpaLister:            ihpaInformer.Lister(),
-		hpaManager:            control.NewHPAManager(genericClient.KubeClient),
+		hpaManager:            control.NewHPAManagerForVersion(genericClient.KubeClient, hpaVersion),
 		vwManager:             control.NewVirtualWorkloadManager(genericClient.InternalClient),
 		ihpaUpdater:           control.NewIHPAUpdater(genericClient.InternalClient),
 		spdUpdater:            control.NewSPDControlImp(controlCtx.Client.InternalClient),
@@ -440,7 +456,7 @@ func NewIHPAController(ctx context.Context, controlCtx *katalystbase.GenericCont
 		metricsEmitter:        controlCtx.EmitterPool.GetDefaultMetricsEmitter().WithTags(IHPAControllerName),
 	}
 
-	ihpaController.syncedFunc = append(ihpaController.syncedFunc, ihpaInformer.Informer().HasSynced)
+	ihpaController.syncedFunc = append(ihpaController.syncedFunc, hpaInformer.HasSynced, ihpaInformer.Informer().HasSynced)
 	ihpaController.syncedFunc = append(ihpaController.syncedFunc, virtualWorkloadInformer.Informer().HasSynced)
 	ihpaController.syncedFunc = append(ihpaController.syncedFunc, spdInformer.Informer().HasSynced)
 

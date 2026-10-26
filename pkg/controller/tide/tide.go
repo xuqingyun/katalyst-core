@@ -108,7 +108,7 @@ func NewTide(ctx context.Context,
 		syncQueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(),
 			tideControllerName),
 	}
-	frameworkHandle, err := autoscalerframework.NewHandle(controlCtx.KubeInformerFactory, nil, false)
+	frameworkHandle, err := autoscalerframework.NewHandle(controlCtx.KubeInformerFactory, nil, false, false)
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +491,8 @@ func classifyNodes(nodes []*corev1.Node, tideNodePool NodePoolWrapper) (
 }
 
 func (t *Tide) GetNodePoolInfo(nodes []*corev1.Node, onlinePodChecker OnlinePodChecker) (clustersnapshot.ClusterSnapshot, []*corev1.Pod, error) {
-	clusterSnapshot := predicate.NewPredicateSnapshot(store.NewBasicSnapshotStore(), t.frameworkHandle, false)
+	// Use the scheduler default parallelism; DRA and the new CSI snapshot mode remain disabled.
+	clusterSnapshot := predicate.NewPredicateSnapshot(store.NewBasicSnapshotStore(), t.frameworkHandle, false, 16, false)
 	pods, err := t.podLister.List(labels.Everything())
 	if err != nil {
 		return nil, nil, err

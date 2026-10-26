@@ -21,6 +21,9 @@ package client // import "github.com/kubewharf/katalyst-core/pkg/client"
 
 import (
 	"fmt"
+	"github.com/kubewharf/katalyst-core/pkg/client/compat"
+
+	"sync"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/discovery"
@@ -68,7 +71,12 @@ func (g *GenericClientSet) BuildMetricClient(mapper *dynamicmapper.RegeneratingD
 }
 
 // newForConfig creates a new clientSet for the given config.
+var clientDefaultsOnce sync.Once
+
 func newForConfig(cfg *rest.Config) (*GenericClientSet, error) {
+	clientDefaultsOnce.Do(compat.ConfigureClientFeatureDefaults)
+
+	cfg = compat.WrapConfig(cfg)
 	cWithProtobuf := rest.CopyConfig(cfg)
 	cWithProtobuf.ContentType = runtime.ContentTypeProtobuf
 

@@ -18,6 +18,8 @@ package ihpa
 
 import (
 	"context"
+	discoveryfake "k8s.io/client-go/discovery/fake"
+	clienttesting "k8s.io/client-go/testing"
 	"testing"
 
 	"github.com/kubewharf/katalyst-api/pkg/apis/config/v1alpha1"
@@ -127,11 +129,15 @@ func TestResourcePortraitIndicatorPlugin(t *testing.T) {
 			controlCtx, err := katalystbase.GenerateFakeGenericContext([]runtime.Object{}, []runtime.Object{}, []runtime.Object{tt.fields.workload})
 			assert.NoError(t, err)
 
+			controlCtx.Client.DiscoveryClient = &discoveryfake.FakeDiscovery{Fake: &clienttesting.Fake{Resources: []*metav1.APIResourceList{{GroupVersion: "autoscaling/v2", APIResources: []metav1.APIResource{{Name: "horizontalpodautoscalers", Kind: "HorizontalPodAutoscaler", Namespaced: true}}}}}}
+
 			ctrl, err := NewIHPAController(context.Background(), controlCtx, nil, nil, tt.fields.ihpaConfig, nil, nil)
 			if tt.wantNil {
 				assert.Nil(t, ctrl)
 			} else {
-				assert.NotNil(t, ctrl)
+				if !assert.NotNil(t, ctrl) {
+					t.Fatalf("constructor error: %v", err)
+				}
 				inf := controlCtx.InternalInformerFactory.Autoscaling().V1alpha2().IntelligentHorizontalPodAutoscalers()
 				inf.Informer().GetStore().Add(tt.fields.ihpa)
 				ctrl.ihpaLister = inf.Lister()
