@@ -26,6 +26,7 @@ import (
 	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/util"
@@ -444,6 +445,16 @@ func SetExtraCGMemLimitWithTimeoutAndAbsCGPath(timeoutSecs int, absCgroupPath st
 	// if this command timeout, a none-nil error will be returned,
 	// but we should return error iff error returns without timeout
 	if err != nil && int(delta) < timeoutSecs {
+		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+			stderr := exitErr.Stderr
+			if len(stderr) > 4096 {
+				stderr = stderr[:4096]
+			}
+			// Bound diagnostics without changing the original exit status or
+			// the existing success/timeout decision above.
+			exitErr.Stderr = append([]byte(nil), stderr...)
+			return fmt.Errorf("set cgroup memory limit %s=%d: %w; stderr: %s", filepath.Join(absCgroupPath, cgroupFile), nbytes, err, strings.TrimSpace(string(stderr)))
+		}
 		return err
 	}
 
