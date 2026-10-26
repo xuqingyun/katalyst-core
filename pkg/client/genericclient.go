@@ -60,6 +60,13 @@ type GenericClientSet struct {
 	ExternalClient externalclient.ExternalMetricsClient
 }
 
+// PodDisruptionBudgets returns a version-compatible read client on demand.
+// Katalyst's eviction consumers use the eviction subresource; creating the
+// generic client therefore does not eagerly discover or watch PDBs.
+func (g *GenericClientSet) PodDisruptionBudgets(namespace string) (*compat.PodDisruptionBudgetClient, error) {
+	return compat.NewPodDisruptionBudgetClient(g.KubeClient, namespace)
+}
+
 // BuildMetricClient builds kubernetes native metrics-clients; and metrics-clients
 // can't be build in init process, since discovery mapper will be initialized at the
 // same time, which is usually not needed for agents (to avoid too many connections).
