@@ -25,7 +25,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/cgroups"
 	"golang.org/x/sys/unix"
 
 	"github.com/kubewharf/katalyst-core/pkg/util/general"

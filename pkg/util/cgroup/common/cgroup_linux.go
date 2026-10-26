@@ -33,7 +33,7 @@ import (
 
 	"github.com/google/cadvisor/container/libcontainer"
 	ocicgroups "github.com/opencontainers/cgroups"
-	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/cgroups"
 
 	"github.com/kubewharf/katalyst-core/pkg/consts"
 	"github.com/kubewharf/katalyst-core/pkg/util/eventbus"
