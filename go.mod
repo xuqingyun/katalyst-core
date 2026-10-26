@@ -312,7 +312,7 @@ replace (
 	k8s.io/kube-proxy => k8s.io/kube-proxy v0.35.0
 	k8s.io/kube-scheduler => k8s.io/kube-scheduler v0.35.0
 	k8s.io/kubectl => k8s.io/kubectl v0.35.0
-	k8s.io/kubelet => github.com/xuqingyun/kubelet v0.0.0-20261026093406-13d6807f3172
+	k8s.io/kubelet => github.com/xuqingyun/kubelet v0.0.0-20261026104848-bfa4f94dd768
 	k8s.io/kubernetes => k8s.io/kubernetes v1.35.0
 	k8s.io/legacy-cloud-providers => k8s.io/legacy-cloud-providers v0.35.0
 	k8s.io/metrics => k8s.io/metrics v0.35.0
@@ -321,8 +321,6 @@ replace (
 	k8s.io/pod-security-admission => k8s.io/pod-security-admission v0.35.0
 	k8s.io/sample-apiserver => k8s.io/sample-apiserver v0.35.0
 )
-
-replace k8s.io/cri-client => k8s.io/cri-client v0.35.0
 
 replace k8s.io/dynamic-resource-allocation => k8s.io/dynamic-resource-allocation v0.35.0
 

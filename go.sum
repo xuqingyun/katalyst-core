@@ -1102,6 +1102,8 @@ github.com/xuqingyun/kubelet v0.0.0-20261026060021-bee7b17e7f0a h1:7k8t81mYcMbPj
 github.com/xuqingyun/kubelet v0.0.0-20261026060021-bee7b17e7f0a/go.mod h1:/AWgha7V8KNoYLchC9zvI9HIe4C0gzjreDGSSPNCVUQ=
 github.com/xuqingyun/kubelet v0.0.0-20261026093406-13d6807f3172 h1:nngEOxkq2l2dafw1KbZ6/Pqd8GhlsV8qX1XvtSVHwcg=
 github.com/xuqingyun/kubelet v0.0.0-20261026093406-13d6807f3172/go.mod h1:/AWgha7V8KNoYLchC9zvI9HIe4C0gzjreDGSSPNCVUQ=
+github.com/xuqingyun/kubelet v0.0.0-20261026104848-bfa4f94dd768 h1:IFBXWTVpFq0roG6pWP4WdFf7GKvp5sDtOPKEz2rGJKw=
+github.com/xuqingyun/kubelet v0.0.0-20261026104848-bfa4f94dd768/go.mod h1:/AWgha7V8KNoYLchC9zvI9HIe4C0gzjreDGSSPNCVUQ=
 github.com/yuin/goldmark v1.1.25/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 github.com/yuin/goldmark v1.1.27/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 github.com/yuin/goldmark v1.1.32/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
