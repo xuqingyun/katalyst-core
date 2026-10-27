@@ -36,6 +36,10 @@ type StaticPolicy struct {
 	drapluginapi.UnimplementedDRAPluginServer
 
 	operationMu                 sync.Mutex
+	claimMu                     sync.Mutex
+	claimLocks                  map[string]*claimLock
+	operationWG                 sync.WaitGroup
+	stopping                    bool
 	cleanupMu                   sync.Mutex
 	stateDirectoryConfiguration *statedirectory.StateDirectoryConfiguration
 	kubeClient                  kubernetes.Interface
@@ -47,6 +51,35 @@ type StaticPolicy struct {
 	runContext                  context.Context
 	cancel                      context.CancelFunc
 	started                     bool
+}
+
+type claimLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func (p *StaticPolicy) lockClaim(uid string) func() {
+	p.claimMu.Lock()
+	if p.claimLocks == nil {
+		p.claimLocks = map[string]*claimLock{}
+	}
+	l := p.claimLocks[uid]
+	if l == nil {
+		l = &claimLock{}
+		p.claimLocks[uid] = l
+	}
+	l.refs++
+	p.claimMu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		p.claimMu.Lock()
+		l.refs--
+		if l.refs == 0 {
+			delete(p.claimLocks, uid)
+		}
+		p.claimMu.Unlock()
+	}
 }
 
 func NewStaticPolicy(options Options) (*StaticPolicy, error) {
@@ -82,6 +115,9 @@ func (p *StaticPolicy) Start() error {
 	if p.started {
 		return nil
 	}
+	p.operationMu.Lock()
+	p.stopping = false
+	p.operationMu.Unlock()
 
 	runContext, cancel := context.WithCancel(context.Background())
 	stateImpl, err := p.startDependencies(runContext)
@@ -108,6 +144,10 @@ func (p *StaticPolicy) startDependencies(ctx context.Context) (state.State, erro
 	)
 	if err != nil {
 		return nil, err
+	}
+	if importer,ok:=p.backend.(CheckpointImporter);ok && len(stateImpl.ListPreparedClaims())==0 {
+		claims,err:=importer.ImportPreparedClaims(ctx);if err!=nil{return nil,err}
+		if len(claims)>0 {if err=stateImpl.SetPreparedClaims(claims,true);err!=nil{return nil,err}}
 	}
 	if err := p.backend.Start(ctx, stateImpl); err != nil {
 		return nil, err
@@ -138,6 +178,10 @@ func (p *StaticPolicy) Stop() error {
 	p.cancel()
 	p.cleanupMu.Lock()
 	defer p.cleanupMu.Unlock()
+	p.operationMu.Lock()
+	p.stopping = true
+	p.operationMu.Unlock()
+	p.operationWG.Wait()
 	p.operationMu.Lock()
 	defer p.operationMu.Unlock()
 
