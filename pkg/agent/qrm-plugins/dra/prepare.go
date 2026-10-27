@@ -165,7 +165,22 @@ func (p *StaticPolicy) prepareOne(
 	claim *resourcev1.ResourceClaim,
 ) ([]state.PreparedDevice, error) {
 	p.operationMu.Lock()
-	defer p.operationMu.Unlock()
+	if p.stopping {
+		p.operationMu.Unlock()
+		return nil, fmt.Errorf("DRA plugin is stopping")
+	}
+	p.operationWG.Add(1)
+	p.operationMu.Unlock()
+	defer p.operationWG.Done()
+	unlock := p.lockClaim(string(claim.UID))
+	defer unlock()
+	p.operationMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			p.operationMu.Unlock()
+		}
+	}()
 
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -184,10 +199,17 @@ func (p *StaticPolicy) prepareOne(
 	if err != nil {
 		return nil, err
 	}
+	// Provider readiness can depend on another claim (the NVIDIA daemon
+	// claim). Keep checkpoint reservation atomic, but never hold the global
+	// operation mutex while waiting for provider/controller readiness.
+	p.operationMu.Unlock()
+	locked = false
 	result, err := p.backend.Prepare(ctx, claim)
 	if err != nil {
 		return nil, err
 	}
+	p.operationMu.Lock()
+	locked = true
 	if err := p.completePrepare(prepared, result); err != nil {
 		return nil, err
 	}
@@ -294,18 +316,31 @@ func sameDevice(
 
 func (p *StaticPolicy) unprepareOne(ctx context.Context, ref claimReference) error {
 	p.operationMu.Lock()
-	defer p.operationMu.Unlock()
+	if p.stopping {
+		p.operationMu.Unlock()
+		return fmt.Errorf("DRA plugin is stopping")
+	}
+	p.operationWG.Add(1)
+	p.operationMu.Unlock()
+	defer p.operationWG.Done()
+	unlock := p.lockClaim(ref.UID)
+	defer unlock()
+	p.operationMu.Lock()
 
 	if err := ctx.Err(); err != nil {
+		p.operationMu.Unlock()
 		return err
 	}
 	prepared, err := p.preparedClaimForUnprepare(ref.UID)
+	p.operationMu.Unlock()
 	if err != nil || prepared == nil {
 		return err
 	}
 	if err := p.backend.Unprepare(ctx, *prepared); err != nil {
 		return err
 	}
+	p.operationMu.Lock()
+	defer p.operationMu.Unlock()
 	if err := p.state.DeletePreparedClaim(ref.UID, true); err != nil {
 		deleteErr := fmt.Errorf("delete prepared claim checkpoint: %w", err)
 		if restoreErr := p.state.SetPreparedClaim(*prepared, false); restoreErr != nil {
