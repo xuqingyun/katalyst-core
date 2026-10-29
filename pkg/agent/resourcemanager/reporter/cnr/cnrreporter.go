@@ -73,6 +73,7 @@ type cnrReporterImpl struct {
 	// latestUpdatedCNR is used as an in-memory cache for CNR;
 	// whenever CNR info is needed, get from this cache firstly
 	latestUpdatedCNR *nodev1alpha1.CustomNodeResource
+	cacheMux         sync.RWMutex
 	mux              sync.Mutex
 
 	notifiers map[string]metaservercnr.CNRNotifier
@@ -115,7 +116,7 @@ func (c *cnrReporterImpl) Run(ctx context.Context) {
 // GetCNR tries to return local cache if exists, otherwise get from APIServer
 
 func (c *cnrReporterImpl) GetCNR(ctx context.Context) (*nodev1alpha1.CustomNodeResource, error) {
-	cnr := c.latestUpdatedCNR.DeepCopy()
+	cnr := c.cachedCNR()
 	if cnr != nil {
 		return cnr, nil
 	}
@@ -197,7 +198,20 @@ func (c *cnrReporterImpl) refreshLatestCNR(ctx context.Context) {
 
 	cnr, err := c.client.NodeV1alpha1().CustomNodeResources().Get(ctx, c.cnrName, metav1.GetOptions{ResourceVersion: "0"})
 	if err == nil {
-		c.latestUpdatedCNR = cnr.DeepCopy()
+		c.cacheCNR(cnr)
+	} else if apierrors.IsNotFound(err) {
+		// A deleted object is not a valid last-known cache entry. Recreate metadata only;
+		// resource status must come from fresh report contents, never the deleted snapshot.
+		c.cacheCNR(nil)
+		recreated, createErr := c.createCNR(ctx, nil)
+		if apierrors.IsAlreadyExists(createErr) {
+			recreated, createErr = c.client.NodeV1alpha1().CustomNodeResources().Get(ctx, c.cnrName, metav1.GetOptions{})
+		}
+		if createErr != nil {
+			klog.Errorf("recreate deleted cnr failed: %v", createErr)
+		} else {
+			c.cacheCNR(recreated)
+		}
 	} else if !c.resetCNRIfNeeded(err) {
 		klog.Errorf("refresh local cnr cache failed with error: %v", err)
 	}
@@ -212,7 +226,8 @@ func (c *cnrReporterImpl) tryUpdateCNR(ctx context.Context, fields []*v1alpha1.R
 	)
 
 	// only get cnr from api server iff latest updated cnr is nil or tryIdx > 0
-	if c.latestUpdatedCNR == nil || tryIdx > 0 {
+	cached := c.cachedCNR()
+	if cached == nil || tryIdx > 0 {
 		c.countMetricsWithBaseTags("reporter_update_retry")
 
 		cnr, err = c.client.NodeV1alpha1().CustomNodeResources().Get(ctx, c.cnrName, metav1.GetOptions{ResourceVersion: "0"})
@@ -233,9 +248,9 @@ func (c *cnrReporterImpl) tryUpdateCNR(ctx context.Context, fields []*v1alpha1.R
 			}
 		}
 
-		c.latestUpdatedCNR = cnr.DeepCopy()
+		c.cacheCNR(cnr)
 	} else {
-		cnr = c.latestUpdatedCNR.DeepCopy()
+		cnr = cached
 	}
 
 	if cnr == nil {
@@ -256,7 +271,7 @@ func (c *cnrReporterImpl) tryUpdateCNR(ctx context.Context, fields []*v1alpha1.R
 	if err != nil && !c.resetCNRIfNeeded(err) {
 		return err
 	} else if err != nil {
-		originCNR = c.latestUpdatedCNR.DeepCopy()
+		originCNR = c.cachedCNR()
 	}
 
 	_, err = c.tryUpdateCNRStatus(ctx, originCNR, cnr)
@@ -305,7 +320,7 @@ func (c *cnrReporterImpl) tryUpdateCNRSpecAndMetadata(ctx context.Context,
 		klog.Infof("patch cnr spec and metadata success\n old cnr spec: %#v, metadata: %#v,\n "+
 			"new cnr spec: %#v, metadata: %#v",
 			originCNR.Spec, originCNR.ObjectMeta, cnr.Spec, cnr.ObjectMeta)
-		c.latestUpdatedCNR = cnr.DeepCopy()
+		c.cacheCNR(cnr)
 
 		// notify cnr spec and metadata update
 		for _, notifier := range c.notifiers {
@@ -357,7 +372,7 @@ func (c *cnrReporterImpl) tryUpdateCNRStatus(ctx context.Context,
 			klog.Infof("patch cnr status success old status: %#v,\n new status: %#v", originCNR.Status, cnr.Status)
 		}
 
-		c.latestUpdatedCNR = cnr.DeepCopy()
+		c.cacheCNR(cnr)
 
 		// notify cnr status update
 		for _, notifier := range c.notifiers {
@@ -375,7 +390,7 @@ func (c *cnrReporterImpl) tryUpdateCNRStatus(ctx context.Context,
 // todo if $ref is supported in CRD, we can skip this since api-server will help with validations
 func (c *cnrReporterImpl) resetCNRIfNeeded(err error) bool {
 	if general.IsUnmarshalTypeError(err) {
-		c.latestUpdatedCNR = c.defaultCNR()
+		c.cacheCNR(c.defaultCNR())
 		klog.Infof("success re-initialize local cnr cache")
 		return true
 	}
@@ -556,4 +571,16 @@ func cnrSpecHasChanged(originSpec *nodev1alpha1.CustomNodeResourceSpec, spec *no
 
 func cnrStatusHasChanged(originStatus *nodev1alpha1.CustomNodeResourceStatus, status *nodev1alpha1.CustomNodeResourceStatus) bool {
 	return !apiequality.Semantic.DeepEqual(originStatus, status)
+}
+
+// A separate cache lock allows notifier callbacks to read CNR while an update is serialized.
+func (c *cnrReporterImpl) cachedCNR() *nodev1alpha1.CustomNodeResource {
+	c.cacheMux.RLock()
+	defer c.cacheMux.RUnlock()
+	return c.latestUpdatedCNR.DeepCopy()
+}
+func (c *cnrReporterImpl) cacheCNR(cnr *nodev1alpha1.CustomNodeResource) {
+	c.cacheMux.Lock()
+	defer c.cacheMux.Unlock()
+	c.latestUpdatedCNR = cnr.DeepCopy()
 }
