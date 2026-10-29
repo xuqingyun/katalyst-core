@@ -109,8 +109,8 @@ func (r *RealPodUpdater) UpdatePodStatus(ctx context.Context, pod *core.Pod, opt
 	return r.client.CoreV1().Pods(pod.Namespace).UpdateStatus(ctx, pod, opts)
 }
 
-func (r *RealPodUpdater) PatchPodStatus(_ context.Context, oldPod, newPod *core.Pod) error {
-	_, _, _, err := statusutil.PatchPodStatus(r.client, oldPod.Namespace, oldPod.Name, oldPod.UID, oldPod.Status, newPod.Status)
+func (r *RealPodUpdater) PatchPodStatus(ctx context.Context, oldPod, newPod *core.Pod) error {
+	_, _, _, err := statusutil.PatchPodStatus(ctx, r.client, oldPod.Namespace, oldPod.Name, oldPod.UID, oldPod.Status, newPod.Status)
 	return err
 }
 
@@ -118,4 +118,20 @@ func (r *RealPodUpdater) PatchPodStatus(_ context.Context, oldPod, newPod *core.
 type RealPodUpdaterWithMetric struct {
 	client kubernetes.Interface
 	RealPodUpdater
+}
+
+// ResizePod submits resource-only changes to the native resize subresource.
+// It never falls back to ordinary PATCH after admission rejects a resize.
+func (r *RealPodUpdater) ResizePod(ctx context.Context, oldPod, newPod *core.Pod) error {
+	before, _ := json.Marshal(oldPod)
+	after, _ := json.Marshal(newPod)
+	patch, err := strategicpatch.CreateTwoWayMergePatch(before, after, &core.Pod{})
+	if err != nil {
+		return err
+	}
+	if general.JsonPathEmpty(patch) {
+		return nil
+	}
+	_, err = r.client.CoreV1().Pods(oldPod.Namespace).Patch(ctx, oldPod.Name, types.StrategicMergePatchType, patch, metav1.PatchOptions{}, "resize")
+	return err
 }
