@@ -33,8 +33,8 @@ import (
 	"strings"
 
 	cgroupsv2 "github.com/containerd/cgroups/v2"
-	libcgroups "github.com/opencontainers/runc/libcontainer/cgroups"
-	"github.com/opencontainers/runc/libcontainer/cgroups/fscommon"
+	libcgroups "github.com/opencontainers/cgroups"
+	"github.com/opencontainers/cgroups/fscommon"
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/katalyst-core/pkg/util/cgroup/common"

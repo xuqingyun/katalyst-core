@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/cgroups"
 
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/advisorsvc"
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/memory/dynamicpolicy/memoryadvisor"
