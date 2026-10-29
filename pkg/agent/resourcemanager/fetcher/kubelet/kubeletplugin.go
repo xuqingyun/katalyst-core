@@ -102,7 +102,7 @@ func NewKubeletReporterPlugin(emitter metrics.MetricEmitter, metaServer *metaser
 
 	topologyStatusAdapter, err := topology.NewPodResourcesServerTopologyAdapter(metaServer, conf.QoSConfiguration, conf.AgentConfiguration,
 		conf.PodResourcesServerEndpoints, conf.KubeletResourcePluginPaths, conf.KubeletResourcePluginStateFile,
-		conf.ResourceNameToZoneTypeMap, nil, p.getNumaInfo, podResourcesFilter, podresources.GetV1Client,
+		conf.ResourceNameToZoneTypeMap, nil, p.getNumaInfo, podResourcesFilter, podresources.GetV1ClientForProtocol(conf.PodResourcesProtocol),
 		conf.NeedValidationResources)
 	if err != nil {
 		return nil, err

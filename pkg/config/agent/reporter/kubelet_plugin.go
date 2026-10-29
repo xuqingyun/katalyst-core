@@ -18,6 +18,7 @@ package reporter
 
 type KubeletPluginConfiguration struct {
 	PodResourcesServerEndpoints    []string
+	PodResourcesProtocol           string
 	KubeletResourcePluginPaths     []string
 	KubeletResourcePluginStateFile string
 	EnableReportTopologyPolicy     bool

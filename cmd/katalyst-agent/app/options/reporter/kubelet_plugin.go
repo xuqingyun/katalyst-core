@@ -19,6 +19,7 @@ package reporter
 import (
 	v1 "k8s.io/api/core/v1"
 	cliflag "k8s.io/component-base/cli/flag"
+	podcompat "k8s.io/kubelet/pkg/apis/podresources/compat"
 	pluginapi "k8s.io/kubelet/pkg/apis/resourceplugin/v1alpha1"
 
 	"github.com/kubewharf/katalyst-core/pkg/config/agent/reporter"
@@ -27,6 +28,7 @@ import (
 
 type KubeletPluginOptions struct {
 	PodResourcesServerEndpoints    []string
+	PodResourcesProtocol           string
 	KubeletResourcePluginPaths     []string
 	KubeletResourcePluginStateFile string
 	EnableReportTopologyPolicy     bool
@@ -41,6 +43,7 @@ type KubeletPluginOptions struct {
 
 func NewKubeletPluginOptions() *KubeletPluginOptions {
 	return &KubeletPluginOptions{
+		PodResourcesProtocol: string(podcompat.DefaultProtocol),
 		PodResourcesServerEndpoints: []string{
 			pluginapi.KubeletSocket,
 		},
@@ -61,6 +64,7 @@ func NewKubeletPluginOptions() *KubeletPluginOptions {
 
 func (o *KubeletPluginOptions) AddFlags(fss *cliflag.NamedFlagSets) {
 	fs := fss.FlagSet("reporter-kubelet")
+	fs.StringVar(&o.PodResourcesProtocol, "podresources-protocol", o.PodResourcesProtocol, "PodResources wire layout of this node: kubewharf-18 or kubewharf-35; independent of apiserver version")
 
 	fs.StringSliceVar(&o.PodResourcesServerEndpoints, "pod-resources-server-endpoint", o.PodResourcesServerEndpoints,
 		"the endpoint of pod resource api server")
@@ -87,6 +91,11 @@ func (o *KubeletPluginOptions) AddFlags(fss *cliflag.NamedFlagSets) {
 }
 
 func (o *KubeletPluginOptions) ApplyTo(c *reporter.KubeletPluginConfiguration) error {
+	protocol, err := podcompat.ParseProtocol(o.PodResourcesProtocol)
+	if err != nil {
+		return err
+	}
+	c.PodResourcesProtocol = string(protocol)
 	c.PodResourcesServerEndpoints = o.PodResourcesServerEndpoints
 	c.KubeletResourcePluginPaths = o.KubeletResourcePluginPaths
 	c.KubeletResourcePluginStateFile = o.KubeletResourcePluginStateFile

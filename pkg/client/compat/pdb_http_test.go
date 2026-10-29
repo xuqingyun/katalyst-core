@@ -28,11 +28,20 @@ func pdbHTTPClient(t *testing.T, handler http.HandlerFunc) kubernetes.Interface 
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	client, err := kubernetes.NewForConfig(WrapConfig(&rest.Config{Host: server.URL}))
+	client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return client
+}
+
+type pdbFeatureGates struct{ base clientfeatures.Gates }
+
+func (g pdbFeatureGates) Enabled(feature clientfeatures.Feature) bool {
+	if feature == clientfeatures.WatchListClient {
+		return false
+	}
+	return g.base.Enabled(feature)
 }
 
 func pdbWriteJSON(w http.ResponseWriter, value interface{}) {
@@ -262,7 +271,7 @@ func TestPDBHTTPInformerUsesOneObjectType(t *testing.T) {
 	// Match GenericClientSet startup: Kubernetes 1.18 supports ordinary
 	// LIST/WATCH, but not the WatchList initial-events protocol.
 	originalGates := clientfeatures.FeatureGates()
-	clientfeatures.ReplaceFeatureGates(clientFeatureDefaults{base: originalGates, watchList: false})
+	clientfeatures.ReplaceFeatureGates(pdbFeatureGates{base: originalGates})
 	defer clientfeatures.ReplaceFeatureGates(originalGates)
 	for _, version := range []string{"v1beta1", "v1"} {
 		t.Run(version, func(t *testing.T) {

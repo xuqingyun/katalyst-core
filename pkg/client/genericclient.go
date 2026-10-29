@@ -22,6 +22,8 @@ package client // import "github.com/kubewharf/katalyst-core/pkg/client"
 import (
 	"fmt"
 
+	"github.com/kubewharf/katalyst-core/pkg/client/compat"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"

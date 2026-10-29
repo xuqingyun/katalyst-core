@@ -25,9 +25,10 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"k8s.io/cri-client/pkg/util"
 	"k8s.io/klog/v2"
+	podcompat "k8s.io/kubelet/pkg/apis/podresources/compat"
 	v1 "k8s.io/kubelet/pkg/apis/podresources/v1"
-	"k8s.io/kubernetes/pkg/kubelet/util"
 
 	"github.com/kubewharf/katalyst-core/pkg/util/general"
 )
@@ -69,14 +70,16 @@ func EndpointAutoDiscoveryPodResourcesClient(endpoints []string, getClientFunc G
 			return
 		}
 
-		p.Lock()
-		// Attempt to create a client and a connection
-		p.client, conn, err = getClientFunc(existingPath, podResourcesClientTimeout, podResourcesClientMaxMsgSize)
+		var client v1.PodResourcesListerClient
+		// Connection failures must not leave the client mutex locked.
+		client, conn, err = getClientFunc(existingPath, podResourcesClientTimeout, podResourcesClientMaxMsgSize)
 		if err != nil {
 			klog.Errorf("failed to create podResources client, connect error: %v", err)
 			return
 		}
 
+		p.Lock()
+		p.client = client
 		p.isInitialized = true
 		p.Unlock()
 
@@ -119,6 +122,20 @@ func (p *podResourcesClient) GetAllocatableResources(ctx context.Context, in *v1
 	return p.client.GetAllocatableResources(ctx, in, opts...)
 }
 
+// Get wraps the Get method of v1.PodResourcesListerClient
+func (p *podResourcesClient) Get(ctx context.Context, in *v1.GetPodResourcesRequest,
+	opts ...grpc.CallOption,
+) (*v1.GetPodResourcesResponse, error) {
+	p.RLock()
+	defer p.RUnlock()
+
+	if !p.isInitialized {
+		return nil, errNotInitialized
+	}
+
+	return p.client.Get(ctx, in, opts...)
+}
+
 // GetClientFunc is a function to get a client for the PodResourcesLister grpc service.
 type GetClientFunc func(socket string, connectionTimeout time.Duration, maxMsgSize int) (v1.PodResourcesListerClient, *grpc.ClientConn, error)
 
@@ -138,4 +155,24 @@ func GetV1Client(socket string, connectionTimeout time.Duration, maxMsgSize int)
 		return nil, nil, fmt.Errorf("error dialing socket %s: %v", socket, err)
 	}
 	return v1.NewPodResourcesListerClient(conn), conn, nil
+}
+
+// GetV1ClientForProtocol selects the node wire layout before issuing any RPC.
+func GetV1ClientForProtocol(value string) GetClientFunc {
+	return func(socket string, timeout time.Duration, maxMsgSize int) (v1.PodResourcesListerClient, *grpc.ClientConn, error) {
+		protocol, err := podcompat.ParseProtocol(value)
+		if err != nil {
+			return nil, nil, err
+		}
+		_, conn, err := GetV1Client(socket, timeout, maxMsgSize)
+		if err != nil {
+			return nil, nil, err
+		}
+		client, err := podcompat.NewClient(conn, protocol)
+		if err != nil {
+			conn.Close()
+			return nil, nil, err
+		}
+		return client, conn, nil
+	}
 }
