@@ -21,6 +21,7 @@ package podkiller
 import (
 	"context"
 	"fmt"
+	"github.com/kubewharf/katalyst-core/pkg/client/compat"
 	"time"
 
 	"github.com/pkg/errors"
@@ -32,9 +33,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/events"
 	cri "k8s.io/cri-api/pkg/apis"
+	remote "k8s.io/cri-client/pkg"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/container"
-	"k8s.io/kubernetes/pkg/kubelet/cri/remote"
 
 	"github.com/kubewharf/katalyst-core/pkg/config"
 	"github.com/kubewharf/katalyst-core/pkg/consts"
@@ -106,7 +107,7 @@ func (e *EvictionAPIKiller) buildEvictionExplicitTriggerAnnotations() map[string
 	return map[string]string{key: val}
 }
 
-func (e *EvictionAPIKiller) Evict(_ context.Context, pod *v1.Pod, gracePeriodSeconds int64, reason, plugin string) error {
+func (e *EvictionAPIKiller) Evict(ctx context.Context, pod *v1.Pod, gracePeriodSeconds int64, reason, plugin string) error {
 	const (
 		policyGroupVersion = "policy/v1beta1"
 		evictionKind       = "Eviction"
@@ -116,6 +117,9 @@ func (e *EvictionAPIKiller) Evict(_ context.Context, pod *v1.Pod, gracePeriodSec
 		klog.Infof("[eviction-killer] send request for pod %v/%v", pod.Namespace, pod.Name)
 
 		deleteOptions := &metav1.DeleteOptions{GracePeriodSeconds: &gracePeriodOverride}
+		if pod.UID != "" {
+			deleteOptions.Preconditions = &metav1.Preconditions{UID: &pod.UID}
+		}
 		eviction := &policy.Eviction{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: policyGroupVersion,
@@ -128,7 +132,7 @@ func (e *EvictionAPIKiller) Evict(_ context.Context, pod *v1.Pod, gracePeriodSec
 			},
 			DeleteOptions: deleteOptions,
 		}
-		return e.client.PolicyV1beta1().Evictions(eviction.Namespace).Evict(context.Background(), eviction)
+		return compat.Evict(ctx, e.client, eviction)
 	}
 
 	return evict(e.client, e.recorder, e.emitter, pod, gracePeriodSeconds, reason, plugin, evictPod)
@@ -292,7 +296,7 @@ type ContainerKiller struct {
 }
 
 func NewContainerKiller(conf *config.Configuration, _ kubernetes.Interface, recorder events.EventRecorder, emitter metrics.MetricEmitter) (Killer, error) {
-	remoteRuntimeService, err := remote.NewRemoteRuntimeService(conf.RuntimeEndpoint, 2*time.Minute)
+	remoteRuntimeService, err := remote.NewRemoteRuntimeService(conf.RuntimeEndpoint, 2*time.Minute, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -306,14 +310,14 @@ func NewContainerKiller(conf *config.Configuration, _ kubernetes.Interface, reco
 
 func (c *ContainerKiller) Name() string { return consts.KillerNameContainerKiller }
 
-func (c *ContainerKiller) Evict(_ context.Context, pod *v1.Pod, gracePeriodSeconds int64, reason, plugin string) error {
+func (c *ContainerKiller) Evict(ctx context.Context, pod *v1.Pod, gracePeriodSeconds int64, reason, plugin string) error {
 	if pod == nil {
 		return fmt.Errorf("pod is nil")
 	}
 
 	for _, containerStatus := range pod.Status.ContainerStatuses {
 		containerID := container.ParseContainerID(containerStatus.ContainerID)
-		err := c.containerManager.StopContainer(containerID.ID, gracePeriodSeconds)
+		err := c.containerManager.StopContainer(ctx, containerID.ID, gracePeriodSeconds)
 		if err != nil {
 			c.recorder.Eventf(pod, nil, v1.EventTypeNormal, consts.EventReasonContainerStopped, consts.EventActionContainerStopping,
 				"Failed to kill container %v; reason: %s", containerStatus.Name, reason)

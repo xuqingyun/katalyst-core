@@ -19,6 +19,7 @@ package podkiller
 import (
 	"context"
 	"fmt"
+	discoveryfake "k8s.io/client-go/discovery/fake"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -311,6 +312,7 @@ func TestEvictionAPIKiller_EvictStampsExplicitTriggerAnnotation(t *testing.T) {
 			conf.GenericEvictionConfiguration.EvictionExplicitTriggerAnnotationKey = tt.key
 			conf.GenericEvictionConfiguration.EvictionExplicitTriggerAnnotationValue = tt.value
 
+			ctx.Client.KubeClient.Discovery().(*discoveryfake.FakeDiscovery).Resources = []*metav1.APIResourceList{{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: "pods/eviction", Group: "policy", Version: "v1beta1"}}}}
 			killer, err := NewEvictionAPIKiller(conf, ctx.Client.KubeClient, &events.FakeRecorder{}, metrics.DummyMetrics{})
 			require.NoError(t, err)
 

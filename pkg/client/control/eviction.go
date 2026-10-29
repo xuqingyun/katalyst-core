@@ -18,6 +18,7 @@ package control
 
 import (
 	"context"
+	"github.com/kubewharf/katalyst-core/pkg/client/compat"
 
 	policy "k8s.io/api/policy/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,7 +56,7 @@ func (d *RealPodEjector) DeletePod(ctx context.Context, namespace, name string, 
 }
 
 func (d *RealPodEjector) EvictPod(ctx context.Context, eviction *policy.Eviction) error {
-	return d.client.PolicyV1beta1().Evictions(eviction.Namespace).Evict(ctx, eviction)
+	return compat.Evict(ctx, d.client, eviction)
 }
 
 // RealPodEjectorWithMetric todo: implement with emitting metrics on updating
