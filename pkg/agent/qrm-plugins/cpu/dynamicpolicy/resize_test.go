@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	pluginapi "k8s.io/kubelet/pkg/apis/resourceplugin/v1alpha1"
@@ -112,7 +113,7 @@ func TestSNBVPA(t *testing.T) {
 	as.NotNil(resp1.PodResources[req.PodUid])
 	as.NotNil(resp1.PodResources[req.PodUid].ContainerResources[testName])
 	as.NotNil(resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -128,7 +129,7 @@ func TestSNBVPA(t *testing.T) {
 			cpuconsts.CPUStateAnnotationKeyNUMAHint:            "0",
 			coreconsts.QRMPodAnnotationTopologyAllocationKey:   `{"Numa":{"0":{"allocated":{"cpu":"2"}}}}`,
 		},
-	}, resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	// resize exceed
 	resizeReq := &pluginapi.ResourceRequest{
@@ -213,7 +214,7 @@ func TestSNBVPA(t *testing.T) {
 	as.NotNil(resp1.PodResources[req.PodUid])
 	as.NotNil(resp1.PodResources[req.PodUid].ContainerResources[testName])
 	as.NotNil(resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -230,7 +231,7 @@ func TestSNBVPA(t *testing.T) {
 			consts.PodAnnotationInplaceUpdateResizingKey:       "true",
 			coreconsts.QRMPodAnnotationTopologyAllocationKey:   `{"Numa":{"0":{"allocated":{"cpu":"3"}}}}`,
 		},
-	}, resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
 }
 
 func TestSNBInplaceUpdateResizeWithSidecar(t *testing.T) {
@@ -374,7 +375,7 @@ func TestSNBInplaceUpdateResizeWithSidecar(t *testing.T) {
 	// check main container
 	as.NotNil(allocationRes.PodResources[mainReq.PodUid].ContainerResources[mainContainerName])
 	as.NotNil(allocationRes.PodResources[mainReq.PodUid].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -391,7 +392,7 @@ func TestSNBInplaceUpdateResizeWithSidecar(t *testing.T) {
 			consts.PodAnnotationAggregatedRequestsKey:          "{\"cpu\":\"3\"}",
 			coreconsts.QRMPodAnnotationTopologyAllocationKey:   `{"Numa":{"0":{"allocated":{"cpu":"3"}}}}`,
 		},
-	}, allocationRes.PodResources[mainReq.PodUid].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, allocationRes.PodResources[mainReq.PodUid].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", allocationRes.PodResources[mainReq.PodUid].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	// reallocate for sidecar
 	// no hints for sidecar
@@ -407,7 +408,7 @@ func TestSNBInplaceUpdateResizeWithSidecar(t *testing.T) {
 	// check sidecar container (follow main container)
 	as.NotNil(allocationRes.PodResources[mainReq.PodUid].ContainerResources[sidecarContainerName])
 	as.NotNil(allocationRes.PodResources[mainReq.PodUid].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -424,7 +425,7 @@ func TestSNBInplaceUpdateResizeWithSidecar(t *testing.T) {
 			consts.PodAnnotationAggregatedRequestsKey:          "{\"cpu\":\"3\"}",
 			coreconsts.QRMPodAnnotationTopologyAllocationKey:   `{"Numa":{"0":{"allocated":{"cpu":"3"}}}}`,
 		},
-	}, allocationRes.PodResources[mainReq.PodUid].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, allocationRes.PodResources[mainReq.PodUid].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", allocationRes.PodResources[mainReq.PodUid].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	// check container allocation request
 	mainContainerAllocation := dynamicPolicy.state.GetAllocationInfo(podUID, mainContainerName)
@@ -493,7 +494,7 @@ func TestSNBInplaceUpdateResizeWithSidecar(t *testing.T) {
 	as.NotNil(resizeMainContainerAllocations.PodResources[podUID])
 	as.NotNil(resizeMainContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName])
 	as.NotNil(resizeMainContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -511,11 +512,11 @@ func TestSNBInplaceUpdateResizeWithSidecar(t *testing.T) {
 			consts.PodAnnotationAggregatedRequestsKey:          "{\"cpu\":\"4\"}",
 			coreconsts.QRMPodAnnotationTopologyAllocationKey:   `{"Numa":{"0":{"allocated":{"cpu":"4"}}}}`,
 		},
-	}, resizeMainContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resizeMainContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", resizeMainContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	as.NotNil(resizeMainContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName])
 	as.NotNil(resizeMainContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -533,7 +534,7 @@ func TestSNBInplaceUpdateResizeWithSidecar(t *testing.T) {
 			consts.PodAnnotationAggregatedRequestsKey:          "{\"cpu\":\"4\"}",
 			coreconsts.QRMPodAnnotationTopologyAllocationKey:   `{"Numa":{"0":{"allocated":{"cpu":"4"}}}}`,
 		},
-	}, resizeMainContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resizeMainContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", resizeMainContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	mainContainerAllocation = dynamicPolicy.state.GetAllocationInfo(podUID, mainContainerName)
 	as.Equal(float64(3), mainContainerAllocation.RequestQuantity)
@@ -651,7 +652,7 @@ func TestSNBInplaceUpdateResizeWithSidecar(t *testing.T) {
 	as.NotNil(resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName])
 	as.NotNil(resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 	// reserve pool size: 2, reclaimed pool size: 4, share-NUMA0 pool size: 11
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -669,11 +670,11 @@ func TestSNBInplaceUpdateResizeWithSidecar(t *testing.T) {
 			consts.PodAnnotationAggregatedRequestsKey:          "{\"cpu\":\"5\"}",
 			coreconsts.QRMPodAnnotationTopologyAllocationKey:   `{"Numa":{"0":{"allocated":{"cpu":"5"}}}}`,
 		},
-	}, resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	as.NotNil(resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName])
 	as.NotNil(resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -691,7 +692,7 @@ func TestSNBInplaceUpdateResizeWithSidecar(t *testing.T) {
 			consts.PodAnnotationAggregatedRequestsKey:          "{\"cpu\":\"5\"}",
 			coreconsts.QRMPodAnnotationTopologyAllocationKey:   `{"Numa":{"0":{"allocated":{"cpu":"5"}}}}`,
 		},
-	}, resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	mainContainerAllocation = dynamicPolicy.state.GetAllocationInfo(podUID, mainContainerName)
 	as.Equal(float64(3), mainContainerAllocation.RequestQuantity)
@@ -775,7 +776,7 @@ func TestNonBindingShareCoresInplaceUpdateResize(t *testing.T) {
 	as.NotNil(resp1.PodResources[req.PodUid].ContainerResources[testName])
 	as.NotNil(resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
 	// share pool size: 10, reclaimed pool size: 4, reserved pool size: 2
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -790,7 +791,7 @@ func TestNonBindingShareCoresInplaceUpdateResize(t *testing.T) {
 		Annotations: map[string]string{
 			consts.PodAnnotationQoSLevelKey: consts.PodAnnotationQoSLevelSharedCores,
 		},
-	}, resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	resizeReq := &pluginapi.ResourceRequest{
 		PodUid:         req.PodUid,
@@ -853,7 +854,7 @@ func TestNonBindingShareCoresInplaceUpdateResize(t *testing.T) {
 	as.NotNil(resp1.PodResources[req.PodUid].ContainerResources[testName])
 	as.NotNil(resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
 	// 10 = 16 - 2(reserved) - 4(reclaimed)
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -869,7 +870,7 @@ func TestNonBindingShareCoresInplaceUpdateResize(t *testing.T) {
 			consts.PodAnnotationQoSLevelKey:              consts.PodAnnotationQoSLevelSharedCores,
 			consts.PodAnnotationInplaceUpdateResizingKey: "true",
 		},
-	}, resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	allocation := dynamicPolicy.state.GetAllocationInfo(req.PodUid, testName)
 	as.NotNil(allocation)
@@ -945,7 +946,7 @@ func TestNonBindingShareCoresInplaceUpdateResizeWithSidecar(t *testing.T) {
 	// reserve pool size: 2, reclaimed pool size: 4, share pool size: 42
 	reclaim := dynamicPolicy.state.GetAllocationInfo(commonstate.PoolNameReclaim, commonstate.FakedContainerName)
 	as.NotNil(reclaim)
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -961,7 +962,7 @@ func TestNonBindingShareCoresInplaceUpdateResizeWithSidecar(t *testing.T) {
 			consts.PodAnnotationQoSLevelKey:           consts.PodAnnotationQoSLevelSharedCores,
 			consts.PodAnnotationAggregatedRequestsKey: "{\"cpu\":\"3\"}",
 		},
-	}, allocationRes.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, allocationRes.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", allocationRes.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	mainReq := &pluginapi.ResourceRequest{
 		PodUid:         podUID,
@@ -1004,7 +1005,7 @@ func TestNonBindingShareCoresInplaceUpdateResizeWithSidecar(t *testing.T) {
 	// reserve pool size: 2, reclaimed pool size: 4, share pool size: 42
 	reclaim = dynamicPolicy.state.GetAllocationInfo(commonstate.PoolNameReclaim, commonstate.FakedContainerName)
 	as.NotNil(reclaim)
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -1020,7 +1021,7 @@ func TestNonBindingShareCoresInplaceUpdateResizeWithSidecar(t *testing.T) {
 			consts.PodAnnotationQoSLevelKey:           consts.PodAnnotationQoSLevelSharedCores,
 			consts.PodAnnotationAggregatedRequestsKey: "{\"cpu\":\"3\"}",
 		},
-	}, allocationRes.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, allocationRes.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", allocationRes.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	// no reallocate for share cores sidecar
 
@@ -1072,7 +1073,7 @@ func TestNonBindingShareCoresInplaceUpdateResizeWithSidecar(t *testing.T) {
 	// reserve pool size: 2, reclaimed pool size: 4, share pool size: 42
 	reclaim = dynamicPolicy.state.GetAllocationInfo(commonstate.PoolNameReclaim, commonstate.FakedContainerName)
 	as.NotNil(reclaim)
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -1089,12 +1090,12 @@ func TestNonBindingShareCoresInplaceUpdateResizeWithSidecar(t *testing.T) {
 			consts.PodAnnotationInplaceUpdateResizingKey: "true",
 			consts.PodAnnotationAggregatedRequestsKey:    "{\"cpu\":\"4\"}",
 		},
-	}, resizeMainContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resizeMainContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", resizeMainContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	as.NotNil(resizeMainContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName])
 	as.NotNil(resizeMainContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 	// reserve pool size: 2, reclaimed pool size: 4, share pool size: 42
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -1111,7 +1112,7 @@ func TestNonBindingShareCoresInplaceUpdateResizeWithSidecar(t *testing.T) {
 			consts.PodAnnotationInplaceUpdateResizingKey: "true",
 			consts.PodAnnotationAggregatedRequestsKey:    "{\"cpu\":\"4\"}",
 		},
-	}, resizeMainContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resizeMainContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", resizeMainContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	mainContainerAllocation = dynamicPolicy.state.GetAllocationInfo(podUID, mainContainerName)
 	as.Equal(float64(3), mainContainerAllocation.RequestQuantity)
@@ -1171,7 +1172,7 @@ func TestNonBindingShareCoresInplaceUpdateResizeWithSidecar(t *testing.T) {
 	// reserve pool size: 2, reclaimed pool size: 4, share pool size: 42
 	reclaim = dynamicPolicy.state.GetAllocationInfo(commonstate.PoolNameReclaim, commonstate.FakedContainerName)
 	as.NotNil(reclaim)
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -1188,12 +1189,12 @@ func TestNonBindingShareCoresInplaceUpdateResizeWithSidecar(t *testing.T) {
 			consts.PodAnnotationInplaceUpdateResizingKey: "true",
 			consts.PodAnnotationAggregatedRequestsKey:    "{\"cpu\":\"5\"}",
 		},
-	}, resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[mainContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	as.NotNil(resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName])
 	as.NotNil(resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 	// reserve pool size: 2, reclaimed pool size: 4, share pool size: 42
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.Truef(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -1210,7 +1211,7 @@ func TestNonBindingShareCoresInplaceUpdateResizeWithSidecar(t *testing.T) {
 			consts.PodAnnotationInplaceUpdateResizingKey: "true",
 			consts.PodAnnotationAggregatedRequestsKey:    "{\"cpu\":\"5\"}",
 		},
-	}, resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)]), "unexpected resource allocation: %v", resizeSidecarContainerAllocations.PodResources[podUID].ContainerResources[sidecarContainerName].ResourceAllocation[string(v1.ResourceCPU)])
 
 	mainContainerAllocation = dynamicPolicy.state.GetAllocationInfo(podUID, mainContainerName)
 	as.Equal(float64(3), mainContainerAllocation.RequestQuantity)
@@ -1931,7 +1932,7 @@ func TestReclaimedCoresVPA(t *testing.T) {
 
 			hintResp, err := dynamicPolicy.GetTopologyHints(context.Background(), hintReq)
 			as.Equalf(tc.expectedHintErr, err != nil, "expected hint error: %v, got: %v", tc.expectedHintErr, err)
-			as.Equal(tc.expectedHintResp, hintResp, "got unexpected hint response")
+			as.Truef(proto.Equal(tc.expectedHintResp, hintResp), "got unexpected hint response: %v", hintResp)
 
 			if tc.expectedHintErr {
 				return
@@ -1966,7 +1967,7 @@ func TestReclaimedCoresVPA(t *testing.T) {
 
 			allocationResp, err := dynamicPolicy.Allocate(context.Background(), allocationReq)
 			as.Equalf(err != nil, tc.expectedAllocationErr, "expected allocation error: %v, got: %v", tc.expectedAllocationErr, err)
-			as.Equal(tc.expectedAllocationResp, allocationResp, "got unexpected allocation response")
+			as.Truef(proto.Equal(tc.expectedAllocationResp, allocationResp), "got unexpected allocation response: %v", allocationResp)
 
 			resizedAllocationInfo := dynamicPolicy.state.GetAllocationInfo(podUid, testName)
 			as.NotNil(resizedAllocationInfo)

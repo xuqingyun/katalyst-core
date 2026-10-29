@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"maps"
 	"net"
 	"os"
 	"path"
@@ -41,6 +42,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,7 +51,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/klog/v2"
 	pluginapi "k8s.io/kubelet/pkg/apis/resourceplugin/v1alpha1"
-	maputil "k8s.io/kubernetes/pkg/util/maps"
 
 	"github.com/kubewharf/katalyst-api/pkg/consts"
 	katalystbase "github.com/kubewharf/katalyst-core/cmd/base"
@@ -1594,7 +1595,7 @@ func TestAllocate(t *testing.T) {
 			as.Nil(err)
 
 			tc.expectedResp.PodUid = tc.req.PodUid
-			as.Equalf(tc.expectedResp, resp, "failed in test case: %s", tc.name)
+			as.Truef(proto.Equal(tc.expectedResp, resp), "failed in test case: %s; expected %v, got %v", tc.name, tc.expectedResp, resp)
 
 			if tc.expectedAllocationInfos != nil {
 				for resourceName, expectedAllocationInfo := range tc.expectedAllocationInfos {
@@ -2571,7 +2572,7 @@ func TestGetTopologyHints(t *testing.T) {
 			as.Nil(err)
 
 			tc.expectedResp.PodUid = tc.req.PodUid
-			as.Equalf(tc.expectedResp, resp, "failed in test case: %s", tc.name)
+			as.Truef(proto.Equal(tc.expectedResp, resp), "failed in test case: %s; expected %v, got %v", tc.name, tc.expectedResp, resp)
 
 			os.RemoveAll(tmpDir)
 		})
@@ -2971,7 +2972,7 @@ func TestGetTopologyAwareResources(t *testing.T) {
 				tc.expectedResp.PodUid = tc.req.PodUid
 			}
 
-			as.Equalf(tc.expectedResp, resp, "failed in test case: %s", tc.description)
+			as.Truef(proto.Equal(tc.expectedResp, resp), "failed in test case: %s; expected %v, got %v", tc.description, tc.expectedResp, resp)
 
 			os.Remove(tmpDir)
 		})
@@ -4565,8 +4566,8 @@ func TestDynamicPolicy_ListContainers(t *testing.T) {
 						ContainerIndex: allocationInfo.ContainerIndex,
 						ContainerType:  pluginapi.ContainerType(containerType),
 						QosLevel:       allocationInfo.QoSLevel,
-						Labels:         maputil.CopySS(allocationInfo.Labels),
-						Annotations:    maputil.CopySS(allocationInfo.Annotations),
+						Labels:         maps.Clone(allocationInfo.Labels),
+						Annotations:    maps.Clone(allocationInfo.Annotations),
 					},
 				},
 			},

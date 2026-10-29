@@ -34,6 +34,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
@@ -1679,7 +1680,7 @@ func TestAllocate(t *testing.T) {
 
 			as.Nilf(err, "failed in test case: %s", tc.name)
 			tc.expectedResp.PodUid = tc.req.PodUid
-			as.Equalf(tc.expectedResp, resp, "failed in test case: %s", tc.name)
+			as.Truef(proto.Equal(tc.expectedResp, resp), "failed in test case: %s; expected %v, got %v", tc.name, tc.expectedResp, resp)
 
 			if tc.allowSharedCoresOverlapReclaimedCores {
 				err := dynamicPolicy.adjustAllocationEntries(dynamicPolicy.state.GetPodEntries(), dynamicPolicy.state.GetMachineState(), true)
@@ -5442,7 +5443,7 @@ func TestGetTopologyHints(t *testing.T) {
 			}
 
 			tc.expectedResp.PodUid = tc.req.PodUid
-			as.Equalf(tc.expectedResp, resp, "failed in test case: %s", tc.name)
+			as.Truef(proto.Equal(tc.expectedResp, resp), "failed in test case: %s; expected %v, got %v", tc.name, tc.expectedResp, resp)
 
 			_ = os.RemoveAll(tmpDir)
 		})
@@ -5675,7 +5676,7 @@ func TestGetTopologyAwareResources(t *testing.T) {
 			tc.expectedResp.PodUid = tc.req.PodUid
 		}
 
-		as.Equalf(tc.expectedResp, resp, "failed in test case: %s", tc.description)
+		as.Truef(proto.Equal(tc.expectedResp, resp), "failed in test case: %s; expected %v, got %v", tc.description, tc.expectedResp, resp)
 
 		if tc.req.Annotations[consts.PodAnnotationQoSLevelKey] == consts.PodAnnotationQoSLevelSharedCores {
 			originalTransitionPeriod := dynamicPolicy.transitionPeriod
@@ -5717,7 +5718,7 @@ func TestGetTopologyAwareResources(t *testing.T) {
 				},
 			}
 
-			as.Equalf(tc.expectedResp, resp, "failed in test case: %s", tc.description)
+			as.Truef(proto.Equal(tc.expectedResp, resp), "failed in test case: %s; expected %v, got %v", tc.description, tc.expectedResp, resp)
 		}
 
 		os.Remove(tmpDir)
@@ -5741,6 +5742,15 @@ func TestGetResourcesAllocation(t *testing.T) {
 	dynamicPolicy.transitionPeriod = time.Millisecond * 10
 
 	testName := "test"
+	expireRampUp := func(podUID string) {
+		allocation := dynamicPolicy.state.GetAllocationInfo(podUID, testName)
+		as.NotNil(allocation)
+		as.True(allocation.RampUp)
+		// Set the checkpoint phase explicitly rather than relying on RPC or
+		// logging latency to consume the 10ms transition period.
+		allocation.InitTimestamp = time.Now().Add(-dynamicPolicy.transitionPeriod - time.Second).Format(util.QRMTimeFormat)
+		dynamicPolicy.state.SetAllocationInfo(podUID, testName, allocation, false)
+	}
 
 	// test for shared_cores
 	req := &pluginapi.ResourceRequest{
@@ -5765,6 +5775,20 @@ func TestGetResourcesAllocation(t *testing.T) {
 	_, err = dynamicPolicy.Allocate(context.Background(), req)
 	as.Nil(err)
 
+	initialCPUs := cpuTopology.CPUDetails.CPUs().Difference(dynamicPolicy.reservedCPUs)
+	as.Equal("1,3-15", initialCPUs.String())
+	as.Equal(14, initialCPUs.Size())
+	initialAllocation := dynamicPolicy.state.GetAllocationInfo(req.PodUid, testName)
+	as.True(initialAllocation.RampUp)
+	as.Equal(initialCPUs, initialAllocation.AllocationResult)
+	as.Equal(map[int]machine.CPUSet{
+		0: machine.NewCPUSet(1, 8, 9),
+		1: machine.NewCPUSet(3, 10, 11),
+		2: machine.NewCPUSet(4, 5, 12, 13),
+		3: machine.NewCPUSet(6, 7, 14, 15),
+	}, initialAllocation.TopologyAwareAssignments)
+	expireRampUp(req.PodUid)
+
 	resp1, err := dynamicPolicy.GetResourcesAllocation(context.Background(), &pluginapi.GetResourcesAllocationRequest{})
 	as.Nil(err)
 
@@ -5774,7 +5798,7 @@ func TestGetResourcesAllocation(t *testing.T) {
 	as.NotNil(resp1.PodResources[req.PodUid])
 	as.NotNil(resp1.PodResources[req.PodUid].ContainerResources[testName])
 	as.NotNil(resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.True(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -5789,15 +5813,12 @@ func TestGetResourcesAllocation(t *testing.T) {
 		Annotations: map[string]string{
 			consts.PodAnnotationQoSLevelKey: consts.PodAnnotationQoSLevelSharedCores,
 		},
-	}, resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resp1.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)]))
 
-	// test after ramping up
-	originalTransitionPeriod := dynamicPolicy.transitionPeriod
-	dynamicPolicy.transitionPeriod = time.Millisecond * 10
-	time.Sleep(20 * time.Millisecond)
+	as.False(dynamicPolicy.state.GetAllocationInfo(req.PodUid, testName).RampUp)
+	// Repeated reconciliation preserves the mature pool.
 	_, err = dynamicPolicy.GetResourcesAllocation(context.Background(), &pluginapi.GetResourcesAllocationRequest{})
 	as.Nil(err)
-	dynamicPolicy.transitionPeriod = originalTransitionPeriod
 	allocationInfo := dynamicPolicy.state.GetAllocationInfo(req.PodUid, testName)
 	as.NotNil(allocationInfo)
 	as.Equal(false, allocationInfo.RampUp)
@@ -5807,7 +5828,7 @@ func TestGetResourcesAllocation(t *testing.T) {
 	as.NotNil(resp2.PodResources[req.PodUid])
 	as.NotNil(resp2.PodResources[req.PodUid].ContainerResources[testName])
 	as.NotNil(resp2.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.True(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -5822,7 +5843,7 @@ func TestGetResourcesAllocation(t *testing.T) {
 		Annotations: map[string]string{
 			consts.PodAnnotationQoSLevelKey: consts.PodAnnotationQoSLevelSharedCores,
 		},
-	}, resp2.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resp2.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)]))
 
 	// test for reclaimed_cores
 	req = &pluginapi.ResourceRequest{
@@ -5853,7 +5874,7 @@ func TestGetResourcesAllocation(t *testing.T) {
 	as.NotNil(resp2.PodResources[req.PodUid])
 	as.NotNil(resp2.PodResources[req.PodUid].ContainerResources[testName])
 	as.NotNil(resp2.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.True(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -5866,7 +5887,7 @@ func TestGetResourcesAllocation(t *testing.T) {
 		Annotations: map[string]string{
 			consts.PodAnnotationQoSLevelKey: consts.PodAnnotationQoSLevelReclaimedCores,
 		},
-	}, resp2.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resp2.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)]))
 
 	req = &pluginapi.ResourceRequest{
 		PodUid:         string(uuid.NewUUID()),
@@ -5908,12 +5929,9 @@ func TestGetResourcesAllocation(t *testing.T) {
 	as.Nil(err)
 
 	// test after ramping up
-	originalTransitionPeriod = dynamicPolicy.transitionPeriod
-	dynamicPolicy.transitionPeriod = time.Millisecond * 10
-	time.Sleep(20 * time.Millisecond)
+	expireRampUp(req.PodUid)
 	_, err = dynamicPolicy.GetResourcesAllocation(context.Background(), &pluginapi.GetResourcesAllocationRequest{})
 	as.Nil(err)
-	dynamicPolicy.transitionPeriod = originalTransitionPeriod
 	allocationInfo = dynamicPolicy.state.GetAllocationInfo(req.PodUid, testName)
 	as.NotNil(allocationInfo)
 	as.Equal(false, allocationInfo.RampUp)
@@ -5923,7 +5941,7 @@ func TestGetResourcesAllocation(t *testing.T) {
 	as.NotNil(resp3.PodResources[req.PodUid])
 	as.NotNil(resp3.PodResources[req.PodUid].ContainerResources[testName])
 	as.NotNil(resp3.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
-	as.Equal(&pluginapi.ResourceAllocationInfo{
+	as.True(proto.Equal(&pluginapi.ResourceAllocationInfo{
 		OciPropertyName:   util.OCIPropertyNameCPUSetCPUs,
 		IsNodeResource:    false,
 		IsScalarResource:  true,
@@ -5938,7 +5956,7 @@ func TestGetResourcesAllocation(t *testing.T) {
 		Annotations: map[string]string{
 			consts.PodAnnotationQoSLevelKey: consts.PodAnnotationQoSLevelSharedCores,
 		},
-	}, resp3.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)])
+	}, resp3.PodResources[req.PodUid].ContainerResources[testName].ResourceAllocation[string(v1.ResourceCPU)]))
 
 	reclaimEntry := dynamicPolicy.state.GetAllocationInfo(commonstate.PoolNameReclaim, "")
 	as.NotNil(reclaimEntry)

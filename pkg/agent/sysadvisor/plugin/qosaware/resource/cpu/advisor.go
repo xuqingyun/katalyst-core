@@ -333,12 +333,13 @@ func (cra *cpuResourceAdvisor) setIsolatedContainers(enableIsolated bool) bool {
 	return len(isolatedPods) > 0
 }
 
-// checkIsolationSafety returns true iff the isolated-limit-sum and share-pool-size exceed total capacity
+// checkIsolationSafety returns true iff shared, isolated and non-exclusive dedicated
+// requirements fit in the capacity outside NUMA-exclusive dedicated regions.
 // todo: this logic contains a lot of assumptions and should be refined in the future
 func (cra *cpuResourceAdvisor) checkIsolationSafety() bool {
 	shareAndIsolationPoolSize := 0
 	dedicatedNonExclusivePoolSize := 0
-	nonBindingNumas := cra.metaServer.CPUDetails.NUMANodes()
+	nonExclusiveNumas := cra.metaServer.CPUDetails.NUMANodes()
 	for _, r := range cra.regionMap {
 		if r.Type() == configapi.QoSRegionTypeShare {
 			controlKnob, err := r.GetProvision()
@@ -357,7 +358,7 @@ func (cra *cpuResourceAdvisor) checkIsolationSafety() bool {
 			})
 		} else if r.Type() == configapi.QoSRegionTypeDedicated {
 			if r.IsNumaExclusive() {
-				nonBindingNumas = nonBindingNumas.Difference(r.GetBindingNumas())
+				nonExclusiveNumas = nonExclusiveNumas.Difference(r.GetBindingNumas())
 			} else if r.IsNumaBinding() {
 				// dedicated numa-binding non-exclusive region, calculate the pool size based on binding numas
 				dedicatedNonExclusivePoolSize += int(math.Ceil(r.GetPodsRequest() / float64(r.GetBindingNumas().Size())))
@@ -368,7 +369,10 @@ func (cra *cpuResourceAdvisor) checkIsolationSafety() bool {
 		}
 	}
 
-	nonExclusiveSize := cra.metaServer.NUMAToCPUs.CPUSizeInNUMAs(cra.nonBindingNumas.ToSliceNoSortInt()...)
+	// NUMA-bound shared and non-exclusive dedicated regions can still host
+	// isolation. cra.nonBindingNumas excludes these NUMAs for non-binding
+	// allocation and therefore cannot represent the capacity checked here.
+	nonExclusiveSize := cra.metaServer.NUMAToCPUs.CPUSizeInNUMAs(nonExclusiveNumas.ToSliceNoSortInt()...)
 	klog.Infof("[qosaware-cpu] shareAndIsolationPoolSize %v, nonExclusiveSize %v，dedicatedNonExclusivePoolSize %v",
 		shareAndIsolationPoolSize, nonExclusiveSize, dedicatedNonExclusivePoolSize)
 	if shareAndIsolationPoolSize+dedicatedNonExclusivePoolSize > nonExclusiveSize {

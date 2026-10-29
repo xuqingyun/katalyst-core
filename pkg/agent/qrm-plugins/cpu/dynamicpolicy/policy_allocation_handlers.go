@@ -72,13 +72,7 @@ func (p *DynamicPolicy) sharedCoresWithoutNUMABindingAllocationHandler(_ context
 		return nil, fmt.Errorf("getReqQuantityFromResourceReq failed with error: %v", err)
 	}
 
-	machineState := p.state.GetMachineState()
-	pooledCPUs := machineState.GetFilteredAvailableCPUSet(p.reservedCPUs,
-		state.WrapAllocationMetaFilter((*commonstate.AllocationMeta).CheckDedicated),
-		state.WrapAllocationMetaFilter((*commonstate.AllocationMeta).CheckSharedOrDedicatedNUMABinding))
-	// cores that are not allocatable from user binding need to be deducted from the pool.
-	notAllocatablePoolsCPUs := state.GetUnitedPoolsCPUs(p.state.GetPodEntries(), state.IsForbiddenPool, commonstate.IsSystemPool)
-	pooledCPUs = pooledCPUs.Difference(notAllocatablePoolsCPUs)
+	pooledCPUs := p.getNonBindingSharedCPUs()
 
 	if pooledCPUs.IsEmpty() {
 		general.Errorf("pod: %s/%s, container: %s get empty pooledCPUs", req.PodNamespace, req.PodName, req.ContainerName)
@@ -206,6 +200,17 @@ func (p *DynamicPolicy) sharedCoresWithoutNUMABindingAllocationHandler(_ context
 		return nil, fmt.Errorf("PackResourceAllocationResponseByAllocationInfo failed with error: %v", err)
 	}
 	return resp, nil
+}
+
+// getNonBindingSharedCPUs returns the CPUs that may be allocated to non-binding
+// shared containers. Admission checks must use the same pool restrictions as
+// allocation, including CPUs assigned to forbidden and system pools.
+func (p *DynamicPolicy) getNonBindingSharedCPUs() machine.CPUSet {
+	pooledCPUs := p.state.GetMachineState().GetFilteredAvailableCPUSet(p.reservedCPUs,
+		state.WrapAllocationMetaFilter((*commonstate.AllocationMeta).CheckDedicated),
+		state.WrapAllocationMetaFilter((*commonstate.AllocationMeta).CheckSharedOrDedicatedNUMABinding))
+	notAllocatablePoolsCPUs := state.GetUnitedPoolsCPUs(p.state.GetPodEntries(), state.IsForbiddenPool, commonstate.IsSystemPool)
+	return pooledCPUs.Difference(notAllocatablePoolsCPUs)
 }
 
 func (p *DynamicPolicy) reclaimedCoresAllocationHandler(ctx context.Context,
@@ -2262,14 +2267,14 @@ func (p *DynamicPolicy) getAllocationPoolEntry(allocationInfo *state.AllocationI
 	errMsg := fmt.Sprintf("cpu advisor doesn't return entry for pool: %s and it's referred by pod: %s/%s, container: %s, qosLevel: %s",
 		ownerPoolName, allocationInfo.PodNamespace, allocationInfo.PodName, allocationInfo.ContainerName, allocationInfo.QoSLevel)
 
-	general.Errorf(errMsg)
+	general.Errorf("%s", errMsg)
 
 	_ = p.emitter.StoreInt64(util.MetricNameOrphanContainer, 1, metrics.MetricTypeNameCount,
 		metrics.MetricTag{Key: "podNamespace", Val: allocationInfo.PodNamespace},
 		metrics.MetricTag{Key: "podName", Val: allocationInfo.PodName},
 		metrics.MetricTag{Key: "containerName", Val: allocationInfo.ContainerName},
 		metrics.MetricTag{Key: "poolName", Val: ownerPoolName})
-	return nil, fmt.Errorf(errMsg)
+	return nil, fmt.Errorf("%s", errMsg)
 }
 
 func (p *DynamicPolicy) updateReclaimAllocationResultByPoolEntry(allocationInfo *state.AllocationInfo,

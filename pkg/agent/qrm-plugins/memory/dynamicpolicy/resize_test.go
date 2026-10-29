@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	pluginapi "k8s.io/kubelet/pkg/apis/resourceplugin/v1alpha1"
@@ -1626,7 +1627,7 @@ func TestRNBMemoryResize(t *testing.T) {
 
 			hintResp, err := dynamicPolicy.GetTopologyHints(context.Background(), hintReq)
 			as.Equalf(err != nil, tc.expectedHintErr, "expected hint error: %v, got: %v", tc.expectedHintErr, err)
-			as.Equal(tc.expectedHintResp, hintResp, "got unexpected hint response")
+			as.Truef(proto.Equal(tc.expectedHintResp, hintResp), "got unexpected hint response: %v", hintResp)
 
 			if tc.expectedHintErr {
 				return
@@ -1661,7 +1662,7 @@ func TestRNBMemoryResize(t *testing.T) {
 
 			allocationResp, err := dynamicPolicy.Allocate(context.Background(), allocationReq)
 			as.Equalf(err != nil, tc.expectedAllocationErr, "expected allocation error: %v, got: %v", tc.expectedAllocationErr, err)
-			as.Equal(tc.expectedAllocationResp, allocationResp, "got unexpected allocation response")
+			as.Truef(proto.Equal(tc.expectedAllocationResp, allocationResp), "got unexpected allocation response: %v", allocationResp)
 		})
 	}
 }

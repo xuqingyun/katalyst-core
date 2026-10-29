@@ -24,6 +24,7 @@ import (
 	info "github.com/google/cadvisor/info/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 	v1 "k8s.io/api/core/v1"
 	pluginapi "k8s.io/kubelet/pkg/apis/resourceplugin/v1alpha1"
 
@@ -607,7 +608,7 @@ func TestDynamicPolicy_numaBindingHintHandler(t *testing.T) {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.want, got)
+				assert.True(t, proto.Equal(tt.want, got), "expected response %v, got %v", tt.want, got)
 			}
 		})
 	}
