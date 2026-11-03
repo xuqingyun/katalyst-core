@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
 
@@ -35,6 +36,11 @@ type PublisherConfig struct {
 	// SliceName optionally preserves a provider's existing resource names.
 	// The returned names must be unique across drivers and nodes.
 	SliceName func(node, driver string, shard int) string
+	// AdoptExisting permits a provider-specific migration after checking native
+	// resource identity. Driver/node and the live Node owner are always checked.
+	AdoptExisting func(*corev1.Node, resourcev1.ResourceSlice) bool
+	// PreserveExistingNames keeps the names and UIDs of adopted native slices.
+	PreserveExistingNames bool
 }
 
 type Publisher struct {
@@ -156,7 +162,8 @@ func (p *Publisher) Reconcile(ctx context.Context, inventory Inventory) error {
 		if slice.Spec.Driver != p.Config.DriverName || slice.Spec.NodeName == nil || *slice.Spec.NodeName != node.Name {
 			continue
 		}
-		if slice.Labels[ManagedLabel] != p.Config.OwnerName || slice.Labels[NodeLabel] != nodeKey(node.Name) {
+		if (slice.Labels[ManagedLabel] != p.Config.OwnerName || slice.Labels[NodeLabel] != nodeKey(node.Name)) &&
+			(p.Config.AdoptExisting == nil || !p.Config.AdoptExisting(node, slice)) {
 			return fmt.Errorf("foreign ResourceSlice %s advertises this driver/node; transfer ownership before enabling QRM", slice.Name)
 		}
 		found := false
@@ -173,7 +180,7 @@ func (p *Publisher) Reconcile(ctx context.Context, inventory Inventory) error {
 		}
 		owned[slice.Name] = slice
 	}
-	desired := p.Config.BuildSlices(node, inventory, generation)
+	desired := p.buildDesired(node, inventory, generation, owned)
 	same := len(owned) == len(desired)
 	for _, slice := range desired {
 		old, ok := owned[slice.Name]
@@ -191,12 +198,12 @@ func (p *Publisher) Reconcile(ctx context.Context, inventory Inventory) error {
 	if !same && !resume && len(owned) > 0 {
 		generation++
 	}
-	desired = p.Config.BuildSlices(node, inventory, generation)
+	desired = p.buildDesired(node, inventory, generation, owned)
 	desiredNames := map[string]bool{}
 	for _, slice := range desired {
 		desiredNames[slice.Name] = true
 		if old, ok := owned[slice.Name]; ok {
-			if reflect.DeepEqual(old.Spec, slice.Spec) && old.Annotations[InventoryAnnotation] == slice.Annotations[InventoryAnnotation] {
+			if reflect.DeepEqual(old.Spec, slice.Spec) && reflect.DeepEqual(old.Labels, slice.Labels) && reflect.DeepEqual(old.Annotations, slice.Annotations) {
 				continue
 			}
 			slice.ResourceVersion = old.ResourceVersion
@@ -217,4 +224,62 @@ func (p *Publisher) Reconcile(ctx context.Context, inventory Inventory) error {
 		}
 	}
 	return nil
+}
+
+func (p *Publisher) buildDesired(node *corev1.Node, inventory Inventory, generation int64, owned map[string]resourcev1.ResourceSlice) []resourcev1.ResourceSlice {
+	out := p.Config.BuildSlices(node, inventory, generation)
+	names := make([]string, 0, len(owned))
+	if p.Config.PreserveExistingNames {
+		for name := range owned {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+	}
+	used := make(map[string]bool, len(names))
+	for _, name := range names {
+		used[name] = true
+	}
+	for i := range out {
+		if i < len(names) {
+			out[i].Name = names[i]
+		} else if p.Config.PreserveExistingNames {
+			name := p.Config.SliceName
+			if name == nil {
+				name = sliceName
+			}
+			for shard := i; used[out[i].Name]; shard++ {
+				out[i].Name = name(node.Name, p.Config.DriverName, shard+1)
+			}
+			used[out[i].Name] = true
+		}
+		old, ok := owned[out[i].Name]
+		if !ok {
+			continue
+		}
+		// Retain native metadata (including Node controller ownership and TCE
+		// annotations) and add only the publisher's bookkeeping fields.
+		desired := out[i]
+		oldDevices := append([]resourcev1.Device(nil), old.Spec.Devices...)
+		newDevices := append([]resourcev1.Device(nil), desired.Spec.Devices...)
+		sort.Slice(oldDevices, func(i, j int) bool { return oldDevices[i].Name < oldDevices[j].Name })
+		sort.Slice(newDevices, func(i, j int) bool { return newDevices[i].Name < newDevices[j].Name })
+		if reflect.DeepEqual(oldDevices, newDevices) {
+			desired.Spec.Devices = old.Spec.Devices
+		}
+		out[i] = *old.DeepCopy()
+		out[i].Spec = desired.Spec
+		if out[i].Labels == nil {
+			out[i].Labels = map[string]string{}
+		}
+		for key, value := range desired.Labels {
+			out[i].Labels[key] = value
+		}
+		if out[i].Annotations == nil {
+			out[i].Annotations = map[string]string{}
+		}
+		for key, value := range desired.Annotations {
+			out[i].Annotations[key] = value
+		}
+	}
+	return out
 }

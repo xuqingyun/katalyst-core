@@ -63,6 +63,58 @@ func TestForeignSlicePreventsConflictingPublication(t *testing.T) {
 	}
 }
 
+func TestNativeSliceAdoptionRetainsIdentityAndMetadata(t *testing.T) {
+	ctx := context.Background()
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a", UID: "node-uid"}}
+	native := BuildSlices(node, publisherTestInventory(2), 7, "test.example.com", "native")[0]
+	native.Spec.Devices[0], native.Spec.Devices[1] = native.Spec.Devices[1], native.Spec.Devices[0]
+	native.Name, native.GenerateName = "node-a-test.example.com-b6nm2", "node-a-test.example.com-"
+	native.UID, native.ResourceVersion = "slice-uid", "123"
+	native.Labels = nil
+	native.Annotations = map[string]string{"tce.kubernetes.io/lastUpdate": "456"}
+	controller := true
+	native.OwnerReferences[0].Controller = &controller
+	client := kubefake.NewSimpleClientset(node, &native)
+	p := &Publisher{Config: &PublisherConfig{
+		NodeName: node.Name, DriverName: "test.example.com", OwnerName: AgentName,
+		PreserveExistingNames: true,
+		AdoptExisting:         func(n *corev1.Node, s resourcev1.ResourceSlice) bool { return s.Spec.Pool.Name == n.Name },
+	}, Client: client}
+	require.NoError(t, p.Reconcile(ctx, publisherTestInventory(2)))
+	got, err := client.ResourceV1().ResourceSlices().Get(ctx, native.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	require.Equal(t, native.UID, got.UID)
+	require.Equal(t, native.GenerateName, got.GenerateName)
+	require.Equal(t, native.OwnerReferences, got.OwnerReferences)
+	require.Equal(t, native.Spec.Pool.Generation, got.Spec.Pool.Generation)
+	require.Equal(t, native.Spec.Devices, got.Spec.Devices)
+	require.Equal(t, "456", got.Annotations["tce.kubernetes.io/lastUpdate"])
+	require.Equal(t, AgentName, got.Labels[ManagedLabel])
+	before := len(client.Actions())
+	require.NoError(t, p.Reconcile(ctx, publisherTestInventory(2)))
+	for _, a := range client.Actions()[before:] {
+		require.NotContains(t, []string{"create", "update", "delete"}, a.GetVerb())
+	}
+	for _, a := range client.Actions() {
+		require.NotContains(t, []string{"create", "delete"}, a.GetVerb())
+	}
+}
+
+func TestAdoptionCannotBypassLiveNodeOwnership(t *testing.T) {
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a", UID: "current-node"}}
+	native := BuildSlices(node, publisherTestInventory(1), 1, "test.example.com", "native")[0]
+	native.Labels = nil
+	native.OwnerReferences[0].UID = "deleted-node"
+	client := kubefake.NewSimpleClientset(node, &native)
+	p := &Publisher{Config: &PublisherConfig{NodeName: node.Name, DriverName: "test.example.com", OwnerName: AgentName,
+		PreserveExistingNames: true, AdoptExisting: func(*corev1.Node, resourcev1.ResourceSlice) bool { return true },
+	}, Client: client}
+	require.ErrorContains(t, p.Reconcile(context.Background(), publisherTestInventory(1)), "different node owner")
+	for _, a := range client.Actions() {
+		require.NotContains(t, []string{"create", "update", "delete"}, a.GetVerb())
+	}
+}
+
 func TestPublicationResumesPartiallyCommittedGeneration(t *testing.T) {
 	ctx := context.Background()
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a", UID: "node-uid"}}
