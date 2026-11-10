@@ -3,6 +3,7 @@ package dra
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,10 +38,17 @@ type PluginConfig struct {
 }
 
 type Runtime struct {
+	// Context is the manager's current startup/running lifecycle. Factories that
+	// perform I/O should use it, so cancellation can interrupt construction.
+	Context         context.Context
 	NodeName        string
 	RESTConfig      *rest.Config
 	RegistrationDir string
 }
+
+// ContextPlugin is an optional extension for vendor plugins with blocking
+// initialization. Existing Start-only plugins remain supported.
+type ContextPlugin interface{ StartWithContext(context.Context) error }
 
 type ProviderFactory func(PluginConfig, Runtime) (skeleton.GenericPlugin, error)
 
@@ -78,12 +86,18 @@ func LoadConfig(path string) (Config, error) {
 }
 
 type Manager struct {
-	mu        sync.Mutex
-	config    Config
-	runtime   Runtime
-	factories map[string]ProviderFactory
-	active    []skeleton.GenericPlugin
-	started   bool
+	// contextMu stays independent of mu so Stop can cancel startup while a
+	// vendor factory or StartWithContext is waiting. Pending Stop requests close
+	// the race before a new startup context has been published.
+	contextMu    sync.Mutex
+	cancel       context.CancelFunc
+	stopRequests int
+	mu           sync.Mutex
+	config       Config
+	runtime      Runtime
+	factories    map[string]ProviderFactory
+	active       []skeleton.GenericPlugin
+	started      bool
 }
 
 func NewManager(config Config, runtime Runtime) (*Manager, error) {
@@ -155,7 +169,10 @@ func (*Manager) Name() string { return AgentName }
 // providers may skip such nodes; unknown provider/configuration errors fail fast.
 var ErrUnsupportedNode = errors.New("DRA provider unsupported on node")
 
-func (m *Manager) Start() error {
+func (m *Manager) Start() error { return m.StartWithContext(context.Background()) }
+
+// StartWithContext starts vendor instances under the containing agent context.
+func (m *Manager) StartWithContext(parent context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.started {
@@ -164,13 +181,42 @@ func (m *Manager) Start() error {
 	if len(m.active) != 0 {
 		return fmt.Errorf("previous DRA driver shutdown is incomplete")
 	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	m.contextMu.Lock()
+	m.cancel = cancel
+	if m.stopRequests > 0 {
+		cancel()
+	}
+	m.contextMu.Unlock()
+	runtime := m.runtime
+	runtime.Context = ctx
+	if err := ctx.Err(); err != nil {
+		return errors.Join(err, m.stop())
+	}
 	for _, config := range m.config.Plugins {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(err, m.stop())
+		}
 		if !config.Enabled {
 			continue
 		}
-		plugin, err := m.factories[config.Provider](config, m.runtime)
+		plugin, err := m.factories[config.Provider](config, runtime)
+		if ctx.Err() != nil {
+			err = errors.Join(err, ctx.Err())
+			// A successful factory may have completed while cancellation was pending.
+			// Release that new object as well as previously started instances.
+			if plugin != nil {
+				if stopErr := plugin.Stop(); stopErr != nil {
+					m.active = append(m.active, plugin)
+					err = errors.Join(err, stopErr)
+				}
+			}
+		}
 		if err != nil {
-			if config.AutoDetect && !config.Required && errors.Is(err, ErrUnsupportedNode) {
+			if ctx.Err() == nil && config.AutoDetect && !config.Required && errors.Is(err, ErrUnsupportedNode) {
 				klog.InfoS("Skipping unsupported DRA provider", "driver", config.DriverName)
 				continue
 			}
@@ -179,12 +225,20 @@ func (m *Manager) Start() error {
 		if plugin == nil || plugin.Name() != config.DriverName {
 			return errors.Join(fmt.Errorf("provider %s returned a different DRA driver", config.Provider), m.stop())
 		}
-		if err = plugin.Start(); err != nil {
+		if contextual, ok := plugin.(ContextPlugin); ok {
+			err = contextual.StartWithContext(ctx)
+		} else {
+			err = plugin.Start()
+		}
+		if ctx.Err() != nil {
+			err = errors.Join(err, ctx.Err())
+		}
+		if err != nil {
 			if stopErr := plugin.Stop(); stopErr != nil {
 				m.active = append(m.active, plugin)
 				return errors.Join(err, stopErr, m.stop())
 			}
-			if config.Required {
+			if ctx.Err() != nil || config.Required {
 				return errors.Join(err, m.stop())
 			}
 			klog.ErrorS(err, "Skipping optional DRA driver after startup failure", "driver", config.DriverName)
@@ -196,9 +250,29 @@ func (m *Manager) Start() error {
 	return nil
 }
 
-func (m *Manager) Stop() error { m.mu.Lock(); defer m.mu.Unlock(); return m.stop() }
+func (m *Manager) Stop() error {
+	m.contextMu.Lock()
+	m.stopRequests++
+	if m.cancel != nil {
+		m.cancel()
+	}
+	m.contextMu.Unlock()
+	m.mu.Lock()
+	err := m.stop()
+	m.mu.Unlock()
+	m.contextMu.Lock()
+	m.stopRequests--
+	m.contextMu.Unlock()
+	return err
+}
 
 func (m *Manager) stop() error {
+	m.contextMu.Lock()
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	m.contextMu.Unlock()
 	var result error
 	remaining := []skeleton.GenericPlugin{}
 	for i := len(m.active) - 1; i >= 0; i-- {

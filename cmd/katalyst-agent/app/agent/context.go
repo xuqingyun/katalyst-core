@@ -66,7 +66,19 @@ type PluginWrapper struct {
 }
 
 func (p *PluginWrapper) Run(ctx context.Context) {
-	if err := p.Start(); err != nil {
+	var err error
+	if contextual, ok := p.GenericPlugin.(interface{ StartWithContext(context.Context) error }); ok {
+		err = contextual.StartWithContext(ctx)
+	} else {
+		err = p.Start()
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			if stopErr := p.Stop(); stopErr != nil {
+				klog.Errorf("stop %v after canceled startup failed: %v", p.Name(), stopErr)
+			}
+			return
+		}
 		klog.Fatalf("start %v failed: %v", p.Name(), err)
 	}
 
