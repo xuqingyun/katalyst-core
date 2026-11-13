@@ -105,3 +105,34 @@ func TestPluginWrapperCanceledStartupReturnsWithoutFatal(t *testing.T) {
 		require.EqualValues(t, 1, plugin.stopCalls.Load())
 	}
 }
+
+// Terminal plugin errors must reach the existing agent failure/restart path.
+type wrapperObservedPlugin struct {
+	wrapperContextPlugin
+	done chan struct{}
+	err  error
+}
+
+func (p *wrapperObservedPlugin) Done() <-chan struct{} { return p.done }
+func (p *wrapperObservedPlugin) Err() error            { return p.err }
+func TestPluginWrapperObservesTerminalFailure(t *testing.T) {
+	const childEnv = "KATALYST_TEST_WRAPPER_TERMINAL_FAILURE"
+	if os.Getenv(childEnv) == "1" {
+		done := make(chan struct{})
+		close(done)
+		p := &wrapperObservedPlugin{wrapperContextPlugin: wrapperContextPlugin{start: func(context.Context) error { return nil }}, done: done, err: errors.New("terminal vendor failure")}
+		(&PluginWrapper{GenericPlugin: p}).Run(context.Background())
+		t.Fatal("terminal failure was ignored")
+		return
+	}
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, executable, "-test.run=^TestPluginWrapperObservesTerminalFailure$", "-test.timeout=5s")
+	command.Env = append(os.Environ(), childEnv+"=1")
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "run fake.example.com failed: terminal vendor failure")
+	require.NoError(t, ctx.Err())
+}

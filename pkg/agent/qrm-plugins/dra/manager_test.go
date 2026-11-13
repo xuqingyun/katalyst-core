@@ -1,218 +1,319 @@
+// Copyright 2026 The Katalyst Authors. SPDX-License-Identifier: Apache-2.0
 package dra
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
-	"sync"
+	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/kubewharf/katalyst-api/pkg/plugins/skeleton"
-	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/dra/state"
-	"github.com/kubewharf/katalyst-core/pkg/config/agent/qrm/statedirectory"
-	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	corev1 "k8s.io/api/core/v1"
-	resourcev1 "k8s.io/api/resource/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	kubefake "k8s.io/client-go/kubernetes/fake"
-	api "k8s.io/kubelet/pkg/apis/dra/v1"
-	registration "k8s.io/kubelet/pkg/apis/pluginregistration/v1"
 )
 
-type testBackend struct {
-	mu         sync.Mutex
-	driver     string
-	prepared   int
-	unprepared int
+func candidate(id, model string) PluginConfig {
+	return PluginConfig{ID: id, Provider: id, Enabled: true, Required: true, DriverName: id + ".example.com", NodeSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "node.kubernetes.io/instance-type", Operator: metav1.LabelSelectorOpIn, Values: []string{model}}}}}
 }
-
-func (*testBackend) Start(context.Context, StateReader) error { return nil }
-func (*testBackend) Stop() error                              { return nil }
-func (*testBackend) Inventory(context.Context) (Inventory, error) {
-	return Inventory{PoolName: "node", Devices: []resourcev1.Device{{Name: "device"}}}, nil
-}
-func (b *testBackend) Prepare(_ context.Context, c *resourcev1.ResourceClaim) (PrepareResult, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.prepared++
-	for _, result := range c.Status.Allocation.Devices.Results {
-		if result.Driver != b.driver {
-			return PrepareResult{}, errors.New("foreign allocation dispatched")
-		}
-	}
-	return PrepareResult{Devices: []state.PreparedDevice{{PoolName: "node", DeviceName: "device", Requests: []string{"request"}, CDIDeviceIDs: []string{b.driver + "/device=one"}}}, ProviderState: json.RawMessage(`{"fake":true}`)}, nil
-}
-func (b *testBackend) Unprepare(_ context.Context, c state.PreparedClaim) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.unprepared++
-	for _, result := range c.Status.Allocation.Devices.Results {
-		if result.Driver != b.driver {
-			return errors.New("foreign checkpoint dispatched")
-		}
-	}
-	return nil
-}
-
-func TestTwoDriversRegisterAndServeIndependentUnixEndpoints(t *testing.T) {
-	root, err := os.MkdirTemp("/tmp", "dra-")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	drivers := []string{"a.example.com", "b.example.com"}
-	claim := &resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "claim", UID: "claim-uid"}, Status: resourcev1.ResourceClaimStatus{Allocation: &resourcev1.AllocationResult{Devices: resourcev1.DeviceAllocationResult{Results: []resourcev1.DeviceRequestAllocationResult{{Driver: drivers[0], Pool: "node", Device: "device", Request: "request"}, {Driver: drivers[1], Pool: "node", Device: "device", Request: "request"}}}}}}
-	kube := kubefake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node", UID: "node-uid"}}, claim)
-	backends := map[string]*testBackend{}
-	factory := func(config PluginConfig, runtime Runtime) (skeleton.GenericPlugin, error) {
-		backend := &testBackend{driver: config.DriverName}
-		backends[config.DriverName] = backend
-		publisher := &Publisher{Config: &PublisherConfig{NodeName: "node", DriverName: config.DriverName, OwnerName: AgentName, ReconcilePeriod: time.Hour}, Client: kube, Inventory: backend.Inventory}
-		policy, err := NewStaticPolicy(Options{DriverName: config.DriverName, Backend: backend, ResourceSlicePublisher: publisher, KubeClient: kube, StateDirectoryConfiguration: &statedirectory.StateDirectoryConfiguration{StateFileDirectory: config.StateDir}})
-		if err != nil {
-			return nil, err
-		}
-		return NewRegisteredPlugin(policy, runtime.RegistrationDir), nil
-	}
-	config := Config{RegistrationDir: root, StateDir: filepath.Join(root, "state")}
-	for i, driver := range drivers {
-		config.Plugins = append(config.Plugins, PluginConfig{ID: []string{"a", "b"}[i], Provider: "fake", Enabled: true, Required: true, DriverName: driver})
-	}
-	m, err := NewManagerWithProviders(config, Runtime{NodeName: "node"}, map[string]ProviderFactory{"fake": factory})
-	require.NoError(t, err)
-	require.NoError(t, m.Start())
-	t.Cleanup(func() { require.NoError(t, m.Stop()) })
-	endpoints := map[string]*grpc.ClientConn{}
-	for _, driver := range drivers {
-		conn, err := grpc.NewClient("unix:"+filepath.Join(root, driver+".sock"), grpc.WithTransportCredentials(insecure.NewCredentials()))
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = conn.Close() })
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		info, err := registration.NewRegistrationClient(conn).GetInfo(ctx, &registration.InfoRequest{})
-		require.NoError(t, err)
-		require.Equal(t, registration.DRAPlugin, info.Type)
-		require.Equal(t, driver, info.Name)
-		require.Equal(t, filepath.Join(root, driver+".sock"), info.Endpoint)
-		_, err = registration.NewRegistrationClient(conn).NotifyRegistrationStatus(ctx, &registration.RegistrationStatus{PluginRegistered: true})
-		require.NoError(t, err)
-		cancel()
-		endpoints[info.Name] = conn
-	}
-	request := &api.NodePrepareResourcesRequest{Claims: []*api.Claim{{Namespace: "ns", Name: "claim", Uid: "claim-uid"}}}
-	for _, driver := range drivers {
-		response, err := api.NewDRAPluginClient(endpoints[driver]).NodePrepareResources(context.Background(), request)
-		require.NoError(t, err)
-		require.Empty(t, response.Claims["claim-uid"].Error)
-		require.Equal(t, driver+"/device=one", response.Claims["claim-uid"].Devices[0].CdiDeviceIds[0])
-	}
-	slices, err := kube.ResourceV1().ResourceSlices().List(context.Background(), metav1.ListOptions{})
-	require.NoError(t, err)
-	require.Len(t, slices.Items, 2)
-	require.NotEqual(t, slices.Items[0].Name, slices.Items[1].Name)
-	for _, driver := range drivers {
-		response, err := api.NewDRAPluginClient(endpoints[driver]).NodeUnprepareResources(context.Background(), &api.NodeUnprepareResourcesRequest{Claims: request.Claims})
-		require.NoError(t, err)
-		require.Empty(t, response.Claims["claim-uid"].Error)
-		require.Equal(t, 1, backends[driver].prepared)
-		require.Equal(t, 1, backends[driver].unprepared)
-	}
-	require.NoError(t, m.Stop())
-	for _, driver := range drivers {
-		_, err := os.Stat(filepath.Join(root, driver+".sock"))
-		require.True(t, os.IsNotExist(err))
-	}
-}
-
-type testPlugin struct {
-	name     string
-	startErr error
-	stopped  int
-	stopErr  error
-}
-
-func (p *testPlugin) Name() string { return p.name }
-func (p *testPlugin) Start() error { return p.startErr }
-func (p *testPlugin) Stop() error  { p.stopped++; return p.stopErr }
-
-func TestManagerRejectsDuplicatesAndRollsBackRequiredFailure(t *testing.T) {
-	config := Config{RegistrationDir: "/tmp", StateDir: "/tmp/dra-state", Plugins: []PluginConfig{{ID: "first", Provider: "fake", Enabled: true, Required: true, DriverName: "a.example.com"}, {ID: "second", Provider: "fake", Enabled: true, Required: true, DriverName: "b.example.com"}}}
-	a := &testPlugin{name: "a.example.com"}
-	b := &testPlugin{name: "b.example.com", startErr: errors.New("failure")}
-	factories := map[string]ProviderFactory{"fake": func(c PluginConfig, _ Runtime) (skeleton.GenericPlugin, error) {
-		if c.ID == "first" {
-			return a, nil
-		}
-		return b, nil
+func runtimeFor(model string) Runtime {
+	return Runtime{NodeName: "node", GetNode: func(context.Context) (*corev1.Node, error) {
+		return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node", Labels: map[string]string{"node.kubernetes.io/instance-type": model}}}, nil
 	}}
-	m, err := NewManagerWithProviders(config, Runtime{}, factories)
-	require.NoError(t, err)
-	require.Error(t, m.Start())
-	require.Equal(t, 1, a.stopped)
-	config.Plugins[1].Required = false
-	m, err = NewManagerWithProviders(config, Runtime{}, factories)
-	require.NoError(t, err)
-	require.NoError(t, m.Start())
-	require.Len(t, m.active, 1)
-	require.NoError(t, m.Stop())
-	config.Plugins[1].DriverName = config.Plugins[0].DriverName
-	_, err = NewManagerWithProviders(config, Runtime{}, factories)
-	require.Error(t, err)
+}
+func managerConfig(plugins ...PluginConfig) Config {
+	return Config{RegistrationDir: "/tmp/registry", StateDir: "/tmp/state", Plugins: plugins}
+}
+func noop() Plugin {
+	return PluginFuncs{StartFunc: func(context.Context) error { return nil }, StopFunc: func(context.Context) error { return nil }}
+}
+func waitError(t *testing.T, ch <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(3 * time.Second):
+		t.Fatal("lifecycle did not finish")
+		return nil
+	}
 }
 
-func TestUnsupportedAutodetectAndStrictConfiguration(t *testing.T) {
-	config := Config{RegistrationDir: "/tmp", StateDir: "/tmp/dra-state", Plugins: []PluginConfig{{ID: "fake", Enabled: true, AutoDetect: true, DriverName: "a.example.com"}}}
-	factories := map[string]ProviderFactory{"fake": func(PluginConfig, Runtime) (skeleton.GenericPlugin, error) { return nil, ErrUnsupportedNode }}
-	m, err := NewManagerWithProviders(config, Runtime{}, factories)
+func TestExclusiveSelectionBeforeAnyVendorConstruction(t *testing.T) {
+	for _, tc := range []struct {
+		name, model string
+		secondSame  bool
+		want        string
+		conflict    bool
+	}{{"unmatched", "cpu", false, "", false}, {"first", "gpu-a", false, "a", false}, {"second", "gpu-b", false, "b", false}, {"overlap", "gpu-a", true, "", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := candidate("a", "gpu-a"), candidate("b", "gpu-b")
+			if tc.secondSame {
+				b.NodeSelector = a.NodeSelector.DeepCopy()
+			}
+			made := []string{}
+			factory := func(p PluginConfig, _ Runtime) (Plugin, error) { made = append(made, p.ID); return noop(), nil }
+			m, err := NewManagerWithProviders(managerConfig(a, b), runtimeFor(tc.model), map[string]ProviderFactory{"a": factory, "b": factory})
+			require.NoError(t, err)
+			err = m.Start()
+			if tc.conflict {
+				require.ErrorContains(t, err, "multiple plugins")
+				require.Empty(t, made)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tc.want, m.SelectedPlugin())
+				if tc.want == "" {
+					require.Empty(t, made)
+				} else {
+					require.Equal(t, []string{tc.want}, made)
+				}
+			}
+			require.NoError(t, m.Stop())
+		})
+	}
+}
+func TestSelectorValidationAndSnapshot(t *testing.T) {
+	a := candidate("a", "gpu-a")
+	a.Config = map[string]json.RawMessage{"flag": json.RawMessage(`"old"`)}
+	factory := func(p PluginConfig, _ Runtime) (Plugin, error) {
+		require.Equal(t, `"old"`, string(p.Config["flag"]))
+		p.Config["flag"][1] = 'Y'
+		p.NodeSelector.MatchExpressions[0].Values[0] = "factory-mutated"
+		return noop(), nil
+	}
+	m, err := NewManagerWithProviders(managerConfig(a), runtimeFor("gpu-a"), map[string]ProviderFactory{"a": factory})
+	require.NoError(t, err)
+	a.NodeSelector.MatchExpressions[0].Values[0] = "mutated"
+	a.Config["flag"][1] = 'X'
+	require.NoError(t, m.Start())
+	require.Equal(t, "a", m.SelectedPlugin())
+	require.NoError(t, m.Stop())
+	require.NoError(t, m.Start())
+	require.Equal(t, "a", m.SelectedPlugin())
+	require.NoError(t, m.Stop())
+	for _, selector := range []*metav1.LabelSelector{nil, {}, {MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "machine", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"cpu"}}}}, {MatchLabels: map[string]string{"invalid/key/again": "gpu"}}} {
+		p := candidate("a", "gpu-a")
+		p.NodeSelector = selector
+		_, err := NewManagerWithProviders(managerConfig(p), runtimeFor("gpu-a"), map[string]ProviderFactory{"a": factory})
+		require.Error(t, err)
+	}
+}
+func TestSelectionDoesNotHideNodeReadFailureOrCanceledLookup(t *testing.T) {
+	failure := errors.New("node lookup failed")
+	calls := 0
+	runtime := Runtime{NodeName: "node", GetNode: func(context.Context) (*corev1.Node, error) { return nil, failure }}
+	m, err := NewManagerWithProviders(managerConfig(candidate("a", "gpu")), runtime, map[string]ProviderFactory{"a": func(PluginConfig, Runtime) (Plugin, error) { calls++; return noop(), nil }})
+	require.NoError(t, err)
+	require.ErrorIs(t, m.Start(), failure)
+	require.Zero(t, calls)
+	entered := make(chan struct{})
+	runtime.GetNode = func(ctx context.Context) (*corev1.Node, error) { close(entered); <-ctx.Done(); return nil, ctx.Err() }
+	m, err = NewManagerWithProviders(managerConfig(candidate("a", "gpu")), runtime, map[string]ProviderFactory{"a": func(PluginConfig, Runtime) (Plugin, error) { calls++; return noop(), nil }})
+	require.NoError(t, err)
+	result := make(chan error, 1)
+	go func() { result <- m.Start() }()
+	<-entered
+	require.NoError(t, m.Stop())
+	require.ErrorIs(t, waitError(t, result), context.Canceled)
+	require.Zero(t, calls)
+}
+func TestNoEnabledPluginNeedsNoNodeRead(t *testing.T) {
+	m, err := NewManagerWithProviders(managerConfig(), Runtime{}, nil)
 	require.NoError(t, err)
 	require.NoError(t, m.Start())
-	require.Empty(t, m.active)
 	require.NoError(t, m.Stop())
-	config.Plugins[0].Required = true
-	m, err = NewManagerWithProviders(config, Runtime{}, factories)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, m.StartWithContext(ctx), context.Canceled)
+}
+func TestSelectedUnsupportedProviderNeverFallsBack(t *testing.T) {
+	a, b := candidate("a", "gpu-a"), candidate("b", "gpu-b")
+	a.Required = false
+	a.AutoDetect = true
+	var calls atomic.Int32
+	m, err := NewManagerWithProviders(managerConfig(a, b), runtimeFor("gpu-a"), map[string]ProviderFactory{"a": func(PluginConfig, Runtime) (Plugin, error) { calls.Add(1); return nil, ErrUnsupportedNode }, "b": func(PluginConfig, Runtime) (Plugin, error) { t.Fatal("fallback constructed"); return nil, nil }})
 	require.NoError(t, err)
-	require.Error(t, m.Start())
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(path, []byte("registrationDir: /tmp\nstateDir: /tmp/state\nplugins: []\n"), 0600))
-	_, err = LoadConfig(path)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, []byte("stateDir: /tmp/state\nunknownField: true\n"), 0600))
-	_, err = LoadConfig(path)
-	require.Error(t, err)
+	require.NoError(t, m.Start())
+	require.EqualValues(t, 1, calls.Load())
+	select {
+	case <-m.Done():
+		t.Fatal("skipped plugin must leave Manager idle until Stop")
+	default:
+	}
+	require.NoError(t, m.Stop())
+}
+func TestFactoryAndReadyStartupCancellation(t *testing.T) {
+	for _, phase := range []string{"factory", "start", "ready"} {
+		t.Run(phase, func(t *testing.T) {
+			entered := make(chan struct{})
+			var stopped atomic.Int32
+			block := func(ctx context.Context) error { close(entered); <-ctx.Done(); return ctx.Err() }
+			p := &readyVendor{Plugin: PluginFuncs{StartFunc: func(context.Context) error { return nil }, StopFunc: func(context.Context) error { stopped.Add(1); return nil }}, ready: func(context.Context) error { return nil }}
+			if phase == "start" {
+				p.Plugin = PluginFuncs{StartFunc: block, StopFunc: func(context.Context) error { stopped.Add(1); return nil }}
+			}
+			if phase == "ready" {
+				p.ready = block
+			}
+			m, err := NewManagerWithProviders(managerConfig(candidate("a", "gpu")), runtimeFor("gpu"), map[string]ProviderFactory{"a": func(_ PluginConfig, r Runtime) (Plugin, error) {
+				if phase == "factory" {
+					return p, block(r.Context)
+				}
+				return p, nil
+			}})
+			require.NoError(t, err)
+			result := make(chan error, 1)
+			go func() { result <- m.Start() }()
+			<-entered
+			require.NoError(t, m.Stop())
+			require.ErrorIs(t, waitError(t, result), context.Canceled)
+			require.EqualValues(t, 1, stopped.Load())
+		})
+	}
 }
 
-func TestInjectedFactoriesAndConfigurationAreSnapshots(t *testing.T) {
-	config := Config{RegistrationDir: "/tmp", StateDir: "/tmp/dra-state", Plugins: []PluginConfig{{ID: "fake", Enabled: true, Required: true, DriverName: DefaultDriverName, Config: map[string]json.RawMessage{"option": json.RawMessage(`"original"`)}}}}
-	var resolved PluginConfig
-	factories := map[string]ProviderFactory{"fake": func(p PluginConfig, _ Runtime) (skeleton.GenericPlugin, error) {
-		resolved = p
-		return &testPlugin{name: p.DriverName}, nil
+type readyVendor struct {
+	Plugin
+	ready func(context.Context) error
+}
+
+func (p *readyVendor) Ready(ctx context.Context) error { return p.ready(ctx) }
+func TestGracefulStopAndRetryKeepRunningContextAlive(t *testing.T) {
+	failure := errors.New("drain incomplete")
+	var running context.Context
+	stops := 0
+	p := PluginFuncs{StartFunc: func(ctx context.Context) error { running = ctx; return nil }, StopFunc: func(ctx context.Context) error {
+		require.NoError(t, running.Err(), "cancel must follow vendor drain")
+		require.NoError(t, ctx.Err())
+		stops++
+		if stops == 1 {
+			return failure
+		}
+		return nil
 	}}
-	manager, err := NewManagerWithProviders(config, Runtime{}, factories)
+	m, err := NewManagerWithProviders(managerConfig(candidate("a", "gpu")), runtimeFor("gpu"), map[string]ProviderFactory{"a": func(PluginConfig, Runtime) (Plugin, error) { return p, nil }})
 	require.NoError(t, err)
-	require.Empty(t, config.Plugins[0].StateDir)
-	delete(factories, "fake")
-	config.Plugins[0].Config["option"][1] = 'x'
-	config.Plugins[0].DriverName = "changed.example.com"
-	require.NoError(t, manager.Start())
-	require.Equal(t, DefaultDriverName, resolved.DriverName)
-	require.Equal(t, filepath.Join(config.StateDir, DefaultDriverName), resolved.StateDir)
-	require.JSONEq(t, `"original"`, string(resolved.Config["option"]))
-	require.NoError(t, manager.Stop())
+	require.NoError(t, m.Start())
+	require.ErrorIs(t, m.Stop(), failure)
+	require.NoError(t, running.Err())
+	require.ErrorContains(t, m.Start(), "shutdown is incomplete")
+	require.NoError(t, m.Stop())
+	require.ErrorIs(t, running.Err(), context.Canceled)
+	require.Equal(t, 2, stops)
+	require.NoError(t, m.Start())
+	require.NoError(t, running.Err())
+	require.NoError(t, m.Stop())
+}
+func TestParentCancellationDrainsBeforeRunningContextCancellation(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var running context.Context
+	drained := make(chan struct{})
+	p := PluginFuncs{StartFunc: func(ctx context.Context) error { running = ctx; return nil }, StopFunc: func(ctx context.Context) error {
+		require.NoError(t, running.Err())
+		require.NoError(t, ctx.Err())
+		close(drained)
+		return nil
+	}}
+	m, err := NewManagerWithProviders(managerConfig(candidate("a", "gpu")), runtimeFor("gpu"), map[string]ProviderFactory{"a": func(PluginConfig, Runtime) (Plugin, error) { return p, nil }})
+	require.NoError(t, err)
+	require.NoError(t, m.StartWithContext(parent))
+	cancel()
+	select {
+	case <-drained:
+	case <-time.After(3 * time.Second):
+		t.Fatal("parent cancellation did not drain")
+	}
+	require.NoError(t, m.Stop())
+	require.ErrorIs(t, running.Err(), context.Canceled)
+}
+func TestStopDeadlineRetainsPluginForRetry(t *testing.T) {
+	var running context.Context
+	stops := 0
+	p := PluginFuncs{StartFunc: func(ctx context.Context) error { running = ctx; return nil }, StopFunc: func(ctx context.Context) error {
+		stops++
+		if stops == 1 {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		require.NoError(t, running.Err())
+		return nil
+	}}
+	m, err := NewManagerWithProviders(managerConfig(candidate("a", "gpu")), runtimeFor("gpu"), map[string]ProviderFactory{"a": func(PluginConfig, Runtime) (Plugin, error) { return p, nil }})
+	require.NoError(t, err)
+	require.NoError(t, m.Start())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, m.StopWithContext(ctx), context.DeadlineExceeded)
+	require.Error(t, m.Start())
+	require.NoError(t, m.Stop())
+	require.ErrorIs(t, running.Err(), context.Canceled)
+}
+func TestPartialFactoryFailureRetainsCleanupAndPendingStop(t *testing.T) {
+	failure := errors.New("factory partially failed")
+	cleanup := errors.New("cleanup failed")
+	stopCalls := 0
+	p := PluginFuncs{StartFunc: func(context.Context) error { t.Fatal("partial plugin started"); return nil }, StopFunc: func(context.Context) error {
+		stopCalls++
+		if stopCalls == 1 {
+			return cleanup
+		}
+		return nil
+	}}
+	m, err := NewManagerWithProviders(managerConfig(candidate("a", "gpu")), runtimeFor("gpu"), map[string]ProviderFactory{"a": func(PluginConfig, Runtime) (Plugin, error) { return p, failure }})
+	require.NoError(t, err)
+	err = m.Start()
+	require.ErrorIs(t, err, failure)
+	require.ErrorIs(t, err, cleanup)
+	require.Error(t, m.Start())
+	require.NoError(t, m.Stop())
+	m.contextMu.Lock()
+	m.stopRequests++
+	m.contextMu.Unlock()
+	require.ErrorIs(t, m.Start(), context.Canceled)
+	m.contextMu.Lock()
+	m.stopRequests--
+	m.contextMu.Unlock()
+}
+func TestSelectionIsFixedUntilRestart(t *testing.T) {
+	model := "gpu-a"
+	runtime := runtimeFor(model)
+	runtime.GetNode = func(context.Context) (*corev1.Node, error) { return runtimeFor(model).GetNode(context.Background()) }
+	made := []string{}
+	factory := func(p PluginConfig, _ Runtime) (Plugin, error) { made = append(made, p.ID); return noop(), nil }
+	m, err := NewManagerWithProviders(managerConfig(candidate("a", "gpu-a"), candidate("b", "gpu-b")), runtime, map[string]ProviderFactory{"a": factory, "b": factory})
+	require.NoError(t, err)
+	require.NoError(t, m.Start())
+	model = "gpu-b"
+	require.NoError(t, m.Start())
+	require.Equal(t, []string{"a"}, made)
+	require.NoError(t, m.Stop())
+	require.NoError(t, m.Start())
+	require.Equal(t, []string{"a", "b"}, made)
+	require.NoError(t, m.Stop())
 }
 
-func TestIncompleteShutdownBlocksRestartUntilCleanupSucceeds(t *testing.T) {
-	config := Config{RegistrationDir: "/tmp", StateDir: "/tmp/dra-state", Plugins: []PluginConfig{{ID: "fake", Enabled: true, Required: true, DriverName: "a.example.com"}}}
-	plugin := &testPlugin{name: "a.example.com", stopErr: errors.New("cleanup failure")}
-	manager, err := NewManagerWithProviders(config, Runtime{}, map[string]ProviderFactory{"fake": func(PluginConfig, Runtime) (skeleton.GenericPlugin, error) { return plugin, nil }})
+type observedVendor struct {
+	Plugin
+	done chan struct{}
+	err  error
+}
+
+func (p *observedVendor) Done() <-chan struct{} { return p.done }
+func (p *observedVendor) Err() error            { return p.err }
+func TestVendorFailureIsObservedAndCleanedUp(t *testing.T) {
+	failure := errors.New("vendor exited")
+	var stopped atomic.Int32
+	p := &observedVendor{Plugin: PluginFuncs{StartFunc: func(context.Context) error { return nil }, StopFunc: func(context.Context) error { stopped.Add(1); return nil }}, done: make(chan struct{}), err: failure}
+	m, err := NewManagerWithProviders(managerConfig(candidate("a", "gpu")), runtimeFor("gpu"), map[string]ProviderFactory{"a": func(PluginConfig, Runtime) (Plugin, error) { return p, nil }})
 	require.NoError(t, err)
-	require.NoError(t, manager.Start())
-	require.Error(t, manager.Stop())
-	require.Error(t, manager.Start())
-	plugin.stopErr = nil
-	require.NoError(t, manager.Stop())
-	require.NoError(t, manager.Start())
-	require.NoError(t, manager.Stop())
+	require.NoError(t, m.Start())
+	close(p.done)
+	select {
+	case <-m.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("vendor exit not observed")
+	}
+	require.ErrorIs(t, m.Err(), failure)
+	require.EqualValues(t, 1, stopped.Load())
+	require.NoError(t, m.Stop())
 }

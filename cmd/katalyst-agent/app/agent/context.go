@@ -83,7 +83,21 @@ func (p *PluginWrapper) Run(ctx context.Context) {
 	}
 
 	klog.Infof("plugin wrapper %s started", p.Name())
-	<-ctx.Done()
+	var done <-chan struct{}
+	observable, observed := p.GenericPlugin.(interface {
+		Done() <-chan struct{}
+		Err() error
+	})
+	if observed {
+		done = observable.Done()
+	}
+	select {
+	case <-ctx.Done():
+	case <-done:
+		if err := observable.Err(); err != nil && ctx.Err() == nil {
+			klog.Fatalf("run %v failed: %v", p.Name(), err)
+		}
+	}
 	if err := p.Stop(); err != nil {
 		klog.Errorf("stop %v failed: %v", p.Name(), err)
 	}

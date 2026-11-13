@@ -1,54 +1,44 @@
-# DRA driver instances
+# Node-selected native DRA plugin lifecycle
 
-The generic `Manager` runs one registered plugin per configured driver. Kubelet
-selects the driver's Unix endpoint from the ResourceClaim allocation. The manager
-handles construction, startup rollback and reverse-order shutdown.
+Manager selects at most one complete vendor driver per node. Its provider contract
+is `Plugin.Start(context.Context)` / `Plugin.Stop(context.Context)`; a factory
+receives the resolved configuration, NodeName, client configuration and managed
+running context. No Prepare, Unprepare, inventory, RPC, publisher or checkpoint
+protocol is part of Katalyst's interface. Native vendor code owns those behaviors.
+`PluginFuncs` connects existing native lifecycle method names without copying the
+data plane. The former Core StaticPolicy/ResourceBackend/state framework has been
+removed; the NVIDIA factory returns the complete native plugin lifecycle.
 
-Embedding agents supply their compiled vendor implementations using
-`RegisterProvider` and `NewManager`, or pass a private factory map to
-`NewManagerWithProviders`. The latter snapshots the factory map and configuration
-at construction. A `ProviderFactory` receives the resolved `PluginConfig` and
-node `Runtime`, and returns a `skeleton.GenericPlugin` whose `Name()` equals the
-configured driver. Return a complete native vendor plugin directly when it
-owns registration, RPC, publication, checkpoint and cleanup. The optional Core
-framework remains available: a factory may build a `ResourceBackend`, inject it
-and a `ResourceSlicePublisher` into `NewStaticPolicy`, then return
-`NewRegisteredPlugin(policy, runtime.RegistrationDir)`. Neither path is required
-by the factory contract.
+Every enabled candidate must have a Kubernetes `nodeSelector` LabelSelector with
+an explicit positive allowlist (`matchLabels` or `In` values). At startup the
+Manager reads the Node through the containing agent's fetcher, resolves all
+matches, and only then calls a vendor factory. Zero matches starts no plugin;
+multiple matches fail before any vendor construction. Missing selectors and
+negative-only rules are rejected. Required means a selected plugin must work,
+not that every machine must match it. Hardware auto-detection remains an extra
+check after selection; unsupported optional nodes do not fall back to another
+vendor. General constructor/startup errors remain visible.
 
-Use factory closures to inject environment-specific clients or configuration.
-Normalize migration defaults before creating the manager. Core does not import
-vendor packages or automatically enable a top-level agent. Optional hardware
-probes return `ErrUnsupportedNode`; `autoDetect` permits skipping those providers.
-Unknown providers and invalid configuration fail startup.
+Selection is fixed during the running instance. A label or configuration change
+requires Stop/restart; Manager does not change drivers under allocated Claims.
+Config maps and selectors are copied at construction. The node fetcher must
+return the configured Node identity and honor context cancellation.
 
-`Publisher` provides driver-scoped ResourceSlice reconciliation and ownership
-checks. It defaults to driver-qualified names; `UseGenerateName` creates slices
-with the native `<node>-<driver>-` prefix and an API-assigned suffix. Shard labels
-keep generated names associated with their inventory partitions across restarts.
-`AdoptExisting` validates native inventory before taking ownership, and
-`PreserveExistingNames` retains existing resource identity. `SliceName` remains
-available for providers that need explicit names. Keep provider-specific
-migration checks and state defaults in the embedding application. Each driver must retain distinct
-socket, state/checkpoint, CDI and service resources.
+Startup cancellation interrupts the factory, vendor Start and optional Ready.
+After startup, parent cancellation requests graceful Stop using an independent
+shutdown context (default `shutdownTimeoutSeconds: 30`). Running cancellation
+follows successful vendor drain/cleanup. Failed or timed-out cleanup retains the
+instance, prevents restart and can be retried. Every non-nil object returned by
+a factory, including a partial failure, is included in cleanup. Plugins must
+honor their contexts; a context cannot forcibly interrupt a vendor's blocking
+hardware library call.
 
-The dual-driver tests use real Unix gRPC endpoints with fake backends and API
-clients. They check registration, mixed-claim Prepare/Unprepare isolation,
-ResourceSlice separation, rollback, and retry after failed shutdown.
+Optional `ReadyPlugin` waits for registration/initialization. Optional
+`ObservablePlugin` exposes Done/Err for terminal failure; Manager stops the
+failed instance and exposes its error to the agent PluginWrapper. Transient
+device health and native retry logic stay with the vendor.
 
-## Cancellable native plugin lifecycle
-
-A vendor with initialization that waits on I/O or informer readiness should
-add `StartWithContext(context.Context) error` alongside its existing Start/Stop
-methods. Manager detects this optional interface and passes its lifecycle
-context. Factories receive the same context in `Runtime.Context`; use it for
-configuration discovery or hardware probes. Existing Start-only plugins remain
-compatible. Their own blocking work must still have cancellation or deadlines.
-
-The containing agent invokes `Manager.StartWithContext` with its Run context.
-Stop cancels the current attempt before waiting for the operation lock, including
-a pending-stop guard before cancel is published. Cancellation never becomes an
-optional-provider skip: it stops later construction and rolls back active
-plugins. Shutdown failures remain available for retry, and successful restart
-gets a fresh context. No vendor-specific checkpoint or RPC protocol is part of
-this lifecycle interface.
+Identity and vendor-specific paths stay in config. Manager does not invent a
+socket filename; native constructors validate their actual registration/RPC
+endpoints. Keep TCE host/container data and runtime paths in the Adapter/Deploy
+configuration. Claims are routed directly by kubelet to the registered vendor.
